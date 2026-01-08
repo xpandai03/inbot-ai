@@ -1,18 +1,35 @@
-import { sql } from "drizzle-orm";
-import { pgTable, text, varchar } from "drizzle-orm/pg-core";
-import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
-export const users = pgTable("users", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  username: text("username").notNull().unique(),
-  password: text("password").notNull(),
+export const intakeRecordSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  phone: z.string(),
+  address: z.string(),
+  intent: z.string(),
+  department: z.string(),
+  channel: z.enum(["Voice", "SMS"]),
+  language: z.string(),
+  durationSeconds: z.number(),
+  cost: z.number(),
+  timestamp: z.string(),
+  transcriptSummary: z.string(),
+  clientId: z.string(),
 });
 
-export const insertUserSchema = createInsertSchema(users).pick({
-  username: true,
-  password: true,
-});
+export const insertIntakeRecordSchema = intakeRecordSchema.omit({ id: true });
 
-export type InsertUser = z.infer<typeof insertUserSchema>;
-export type User = typeof users.$inferSelect;
+export type IntakeRecord = z.infer<typeof intakeRecordSchema>;
+export type InsertIntakeRecord = z.infer<typeof insertIntakeRecordSchema>;
+
+export type UserRole = "client" | "superadmin";
+
+export interface DashboardStats {
+  totalRecords: number;
+  totalMinutesToday: number;
+  totalCost: number;
+}
+
+export interface Client {
+  id: string;
+  name: string;
+}
