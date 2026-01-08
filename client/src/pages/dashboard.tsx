@@ -81,7 +81,7 @@ export default function Dashboard() {
     return null;
   }
 
-  const departments = [...new Set(records.map((r) => r.department))];
+  const departments = Array.from(new Set(records.map((r) => r.department)));
   
   const filteredRecords = records.filter((record) => {
     if (departmentFilter !== "all" && record.department !== departmentFilter) {
