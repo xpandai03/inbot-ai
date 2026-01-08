@@ -1,0 +1,363 @@
+**Project: VAPI Secure Intake Dashboard (Demo Build)**
+
+* * * * *
+
+**ROLE & CONTEXT**
+------------------
+
+You are a **senior full-stack engineer** working inside Replit Build Mode.
+
+Your task is to build a **high-fidelity demo application** (not production) that visually and conceptually represents a **secure AI voice + SMS intake system** powered by Vapi, Supabase, and automation tooling.
+
+This demo will be used in a **sales Loom** to close a client.
+
+The goal is **clarity, trust, and inevitability**, not full functionality.
+
+* * * * *
+
+**CORE OBJECTIVE**
+------------------
+
+Build a **single web app** that demonstrates:
+
+1.  How AI calls/texts become **structured records**
+
+2.  How the **same data** is shown differently to:
+
+    -   Super Admin
+
+    -   Client User
+
+3.  How the system acts as a **secure system of record**
+
+4.  How cost, routing, and access are controlled
+
+The app must *feel* real, polished, and enterprise-ready --- even if the backend is lightweight.
+
+* * * * *
+
+**NON-GOALS (IMPORTANT)**
+-------------------------
+
+This is **not** a production system.
+
+Do **not** attempt:
+
+-   Full authentication (mock roles instead)
+
+-   Full Vapi prompt engineering
+
+-   n8n / email sending
+
+-   Real Supabase setup
+
+-   Real billing logic
+
+-   Multilingual optimization
+
+We are building a **demo with real structure**, not a real deployment.
+
+* * * * *
+
+**TECH CONSTRAINTS**
+--------------------
+
+-   Must run fully inside Replit
+
+-   Must be demo-ready in under 1 hour of build time
+
+-   Backend can use:
+
+    -   In-memory store, SQLite, or lightweight local DB
+
+-   Frontend should be fast, clean, and minimal
+
+* * * * *
+
+**TECH STACK (Preferred)**
+--------------------------
+
+-   **Frontend:** React (or Next.js if faster in Replit)
+
+-   **Styling:** Tailwind CSS
+
+-   **Backend:** Node.js (Express or Next API routes)
+
+-   **State:** Simple server state (array / local DB)
+
+-   **No external auth services**
+
+* * * * *
+
+**APP STRUCTURE (HIGH LEVEL)**
+------------------------------
+
+### **Pages / Routes**
+
+1.  /
+
+    -   Landing / Login Selector
+
+    -   Buttons:
+
+        -   "Login as Super Admin"
+
+        -   "Login as Client"
+
+2.  /dashboard
+
+    -   Renders different UI based on role
+
+    -   Same underlying data
+
+    -   Different visibility and controls
+
+3.  /webhook/vapi (API route)
+
+    -   Receives simulated or real Vapi webhook payload
+
+    -   Inserts a new "conversation record" into datastore
+
+* * * * *
+
+**DATA MODEL (SIMPLIFIED)**
+---------------------------
+
+Each record should include:
+
+-   id
+
+-   name
+
+-   phone
+
+-   address
+
+-   intent
+
+-   department
+
+-   channel (Voice / SMS)
+
+-   language
+
+-   duration_seconds
+
+-   cost
+
+-   timestamp
+
+-   transcript_summary (string)
+
+Seed the app with **5--8 fake records**.
+
+* * * * *
+
+**ROLE-BASED UI REQUIREMENTS**
+------------------------------
+
+### **CLIENT DASHBOARD**
+
+Client can:
+
+-   View table of their records
+
+-   Filter by department
+
+-   Download CSV (fake but functional)
+
+-   See:
+
+    -   Name
+
+    -   Address
+
+    -   Intent
+
+    -   Department
+
+    -   Channel
+
+    -   Timestamp
+
+-   Button:
+
+    -   "Send Broadcast SMS" (opens modal, no real send)
+
+Client CANNOT:
+
+-   See other clients
+
+-   See markup or cost breakdown
+
+-   Access records by URL ID
+
+* * * * *
+
+### **SUPER ADMIN DASHBOARD**
+
+Super Admin sees **everything**, plus:
+
+-   Cost per record
+
+-   Total minutes today
+
+-   Cost vs markup
+
+-   Client selector (fake)
+
+-   Ability to set:
+
+    -   Cost markup percentage (UI only)
+
+This view should clearly feel like **platform-level control**.
+
+* * * * *
+
+**VAPI WEBHOOK DEMO (OPTIONAL BUT DESIRED)**
+--------------------------------------------
+
+If possible:
+
+-   Expose POST /webhook/vapi
+
+-   Accept JSON payload
+
+-   On receipt:
+
+    -   Create a new record
+
+    -   Auto-assign:
+
+        -   intent = "Pothole"
+
+        -   department = "Public Works"
+
+-   Refresh dashboard to show new row
+
+This enables a Loom moment where a **real call triggers visible data**.
+
+If webhook integration becomes unstable:
+
+-   Fall back gracefully to seeded data
+
+-   Do NOT block the build
+
+* * * * *
+
+**DESIGN & UX DIRECTION (VERY IMPORTANT)**
+------------------------------------------
+
+The UI should feel:
+
+-   **Minimal**
+
+-   **Modern**
+
+-   **Liquid-glass / Apple-like**
+
+-   Calm, neutral, trustworthy
+
+### **Design principles:**
+
+-   White / light gray background
+
+-   Soft borders
+
+-   Rounded corners
+
+-   Subtle shadows
+
+-   No clutter
+
+-   Tables with lots of breathing room
+
+-   Clean typography
+
+-   No heavy colors
+
+-   No dashboards that feel "SaaS spammy"
+
+This app should look like something:
+
+> "A municipality or healthcare org would trust."
+
+* * * * *
+
+**UX DETAILS TO INCLUDE**
+-------------------------
+
+-   Clear role indicator (Client vs Super Admin)
+
+-   Clear separation of permissions
+
+-   Empty states handled gracefully
+
+-   Loading states (even if fake)
+
+-   No exposed IDs in URLs
+
+-   No debug junk in UI
+
+* * * * *
+
+**NARRATIVE AWARENESS (IMPORTANT)**
+-----------------------------------
+
+This app will be shown in a Loom with narration like:
+
+> "This is the system of record fed by Vapi voice and SMS agents."
+
+So structure the UI to **support that story**:
+
+-   Tables feel authoritative
+
+-   Data feels final
+
+-   No toy-like visuals
+
+* * * * *
+
+**DELIVERY EXPECTATION**
+------------------------
+
+By the end of this build, I should be able to:
+
+-   Open the app
+
+-   Click "Login as Client"
+
+-   See clean reports
+
+-   Switch to "Super Admin"
+
+-   See expanded controls
+
+-   (Optionally) trigger a webhook and watch data appear
+
+* * * * *
+
+**FINAL INSTRUCTION**
+---------------------
+
+Prioritize:
+
+1.  UX clarity
+
+2.  Visual polish
+
+3.  Conceptual correctness
+
+Over:
+
+-   Edge cases
+
+-   Full integrations
+
+-   Over-engineering
+
+Build decisively.
+
+If tradeoffs are required, **favor UI over backend complexity**.
+
+* * * * *
