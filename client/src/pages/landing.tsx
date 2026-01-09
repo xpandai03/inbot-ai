@@ -25,9 +25,7 @@ export default function Landing() {
           <h1 className="text-3xl font-semibold tracking-tight text-foreground" data-testid="text-title">
             VAPI Secure Intake
           </h1>
-          <p className="text-muted-foreground text-base max-w-md mx-auto leading-relaxed">
-            AI-powered voice and SMS intake system. Your authoritative system of record for citizen and patient communications.
-          </p>
+          <p className="text-muted-foreground text-base max-w-md mx-auto leading-relaxed">AI-powered voice and SMS intake system. Your authoritative system of record for citizen and patient communications. Personalized demo for Julio :)</p>
         </div>
 
         <div className="flex items-center justify-center gap-3 text-muted-foreground text-sm">
