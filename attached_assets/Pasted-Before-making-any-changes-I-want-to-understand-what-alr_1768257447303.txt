@@ -1,0 +1,59 @@
+Before making any changes, I want to understand what already exists in this project so I can decide whether to reuse it for a production Phase 1 build.
+
+Please answer the following clearly and specifically.
+
+⸻
+
+1️⃣ Architecture & Stack
+	1.	What framework is this app built with (e.g. Next.js, Vite + React, plain React, etc.)?
+	2.	Is there a backend/API layer, or is everything client-side?
+	3.	Where does server-side logic live (API routes, Express server, etc.)?
+	4.	Is the project structured in a way that supports adding real integrations later (Supabase, webhooks, auth)?
+
+⸻
+
+2️⃣ Data Model & State
+	5.	What is the current data model used for the dashboard?
+	6.	Are “interactions” represented as a single object type? If so, what fields exist?
+	7.	Is the data hardcoded, mocked, or coming from an API?
+	8.	Is there a clear place where ingestion from Vapi/Twilio could be wired in?
+	9.	Are client vs super-admin views derived from the same underlying data?
+
+⸻
+
+3️⃣ Role & Access Separation
+	10.	How are roles currently handled (hardcoded toggle, state variable, routing, etc.)?
+	11.	Is the UI already structured to cleanly separate:
+	•	client view
+	•	super admin view
+	12.	Would it be straightforward to replace the role toggle with real auth later?
+
+⸻
+
+4️⃣ Dashboard Functionality
+	13.	What dashboard features are already implemented?
+	•	tables
+	•	filters
+	•	CSV export
+	•	cost / duration columns
+	14.	Which features are purely visual vs actually functional?
+	15.	Are any parts of the UI tightly coupled to fake data assumptions?
+
+⸻
+
+5️⃣ Reuse & Migration Risk
+	16.	What parts of this codebase are clearly demo-only and would need to be rewritten?
+	17.	What parts look production-viable with minimal changes?
+	18.	Are there any architectural decisions that would block:
+	•	scaling to hundreds of records per day
+	•	adding auth / RLS
+	•	adding async ingestion
+
+⸻
+
+6️⃣ Recommendation (Critical)
+	19.	In your opinion, should this codebase be:
+	•	(A) Used as the foundation for Phase 1
+	•	(B) Partially reused (UI only)
+	•	(C) Treated as a throwaway demo
+	20.	If partial reuse is recommended, which exact folders/files should be kept?
