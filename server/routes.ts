@@ -1,22 +1,85 @@
-import type { Express } from "express";
+import type { Express, RequestHandler } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertIntakeRecordSchema } from "@shared/schema";
+import { insertIntakeRecordSchema, type IntakeRecord } from "@shared/schema";
 import {
   isEndOfCallReport,
   transformVapiToIntakeRecord,
   getCallId,
   type VapiWebhookPayload,
 } from "./vapi-transform";
+import { sendDepartmentEmail, normalizeDepartment } from "./email";
+import { requireAuth, requireSuperAdmin, getEffectiveClientId } from "./auth";
+
+// Auth enforcement flag - set to true once frontend auth is ready
+const AUTH_ENABLED = process.env.AUTH_ENABLED === "true";
+
+// Conditional auth middleware - only enforces if AUTH_ENABLED
+const conditionalAuth: RequestHandler = (req, res, next) => {
+  if (!AUTH_ENABLED) {
+    return next();
+  }
+  return requireAuth(req, res, next);
+};
+
+// Conditional super admin check
+const conditionalSuperAdmin: RequestHandler = (req, res, next) => {
+  if (!AUTH_ENABLED) {
+    return next();
+  }
+  return requireSuperAdmin(req, res, next);
+};
+
+/**
+ * Trigger department email notification (async, fire-and-forget)
+ * Never blocks the response or throws errors
+ */
+async function triggerDepartmentEmail(record: IntakeRecord): Promise<void> {
+  try {
+    // Normalize department to known categories
+    const normalizedDept = normalizeDepartment(record.department);
+
+    // Look up email configuration
+    const emailConfig = await storage.getDepartmentEmail(record.clientId, normalizedDept);
+
+    if (!emailConfig) {
+      console.log(`[email] No email config for client "${record.clientId}", skipping notification`);
+      return;
+    }
+
+    // Send email (async)
+    const result = await sendDepartmentEmail(record, emailConfig);
+
+    // Log the result
+    await storage.logEmailSend(
+      record.id,
+      normalizedDept,
+      emailConfig.email,
+      emailConfig.cc_email,
+      result.success ? "sent" : "failed",
+      result.error
+    );
+
+    if (result.success) {
+      console.log(`[email] Department notification sent for record ${record.id}`);
+    } else {
+      console.warn(`[email] Failed to send notification for record ${record.id}: ${result.error}`);
+    }
+  } catch (err) {
+    // Catch-all to ensure email issues never affect the main flow
+    console.error("[email] Unexpected error in triggerDepartmentEmail:", err);
+  }
+}
 
 export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
   
-  app.get("/api/records", async (req, res) => {
+  // Protected routes - require auth when AUTH_ENABLED=true
+  app.get("/api/records", conditionalAuth, async (req, res) => {
     try {
-      const clientId = req.query.clientId as string | undefined;
+      const clientId = getEffectiveClientId(req);
       const records = await storage.getRecords(clientId);
       res.json(records);
     } catch (error) {
@@ -24,9 +87,9 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/stats", async (req, res) => {
+  app.get("/api/stats", conditionalAuth, async (req, res) => {
     try {
-      const clientId = req.query.clientId as string | undefined;
+      const clientId = getEffectiveClientId(req);
       const stats = await storage.getStats(clientId);
       res.json(stats);
     } catch (error) {
@@ -34,7 +97,8 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/clients", async (_req, res) => {
+  // Clients list - super admin only when auth is enabled
+  app.get("/api/clients", conditionalAuth, conditionalSuperAdmin, async (_req, res) => {
     try {
       const clients = await storage.getClients();
       res.json(clients);
@@ -70,6 +134,9 @@ export async function registerRoutes(
         // Write to storage
         const newRecord = await storage.createRecord(validation.data);
         console.log(`[webhook/vapi] Created record: ${newRecord.id}`);
+
+        // Trigger email notification (async, non-blocking)
+        triggerDepartmentEmail(newRecord).catch(() => {});
 
         return res.status(201).json({
           success: true,
@@ -110,6 +177,10 @@ export async function registerRoutes(
       }
 
       const newRecord = await storage.createRecord(validation.data);
+
+      // Trigger email notification (async, non-blocking)
+      triggerDepartmentEmail(newRecord).catch(() => {});
+
       res.status(201).json({ success: true, record: newRecord });
     } catch (error) {
       console.error("[webhook/vapi] Error:", error);

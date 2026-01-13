@@ -7,12 +7,27 @@ import {
   type DBInteraction,
 } from "./supabase";
 
+export interface DepartmentEmailConfig {
+  email: string;
+  cc_email: string | null;
+}
+
 export interface IStorage {
   getRecords(clientId?: string): Promise<IntakeRecord[]>;
   getRecord(id: string): Promise<IntakeRecord | undefined>;
   createRecord(record: InsertIntakeRecord): Promise<IntakeRecord>;
   getStats(clientId?: string): Promise<DashboardStats>;
   getClients(): Promise<Client[]>;
+  // Email routing methods
+  getDepartmentEmail(clientId: string, department: string): Promise<DepartmentEmailConfig | null>;
+  logEmailSend(
+    interactionId: string,
+    department: string,
+    recipientEmail: string,
+    ccEmail: string | null,
+    status: "sent" | "failed",
+    errorMessage?: string
+  ): Promise<void>;
 }
 
 const clients: Client[] = [
@@ -209,6 +224,23 @@ export class MemStorage implements IStorage {
   async getClients(): Promise<Client[]> {
     return clients;
   }
+
+  // Stub implementations for MemStorage (email features require Supabase)
+  async getDepartmentEmail(_clientId: string, _department: string): Promise<DepartmentEmailConfig | null> {
+    console.warn("[MemStorage] getDepartmentEmail not available in memory mode");
+    return null;
+  }
+
+  async logEmailSend(
+    _interactionId: string,
+    _department: string,
+    _recipientEmail: string,
+    _ccEmail: string | null,
+    _status: "sent" | "failed",
+    _errorMessage?: string
+  ): Promise<void> {
+    console.warn("[MemStorage] logEmailSend not available in memory mode");
+  }
 }
 
 export class SupabaseStorage implements IStorage {
@@ -314,6 +346,74 @@ export class SupabaseStorage implements IStorage {
 
   async getClients(): Promise<Client[]> {
     return clients;
+  }
+
+  /**
+   * Look up department email configuration
+   * Falls back to "General" if specific department not found
+   */
+  async getDepartmentEmail(clientId: string, department: string): Promise<DepartmentEmailConfig | null> {
+    // First try exact department match
+    const { data, error } = await this.supabase
+      .from("department_emails")
+      .select("email, cc_email")
+      .eq("client_id", clientId)
+      .eq("department", department)
+      .single();
+
+    if (!error && data) {
+      return {
+        email: data.email,
+        cc_email: data.cc_email,
+      };
+    }
+
+    // If not found, try "General" fallback
+    if (department !== "General") {
+      console.log(`[storage] No email config for "${department}", trying "General" fallback`);
+      const { data: fallbackData, error: fallbackError } = await this.supabase
+        .from("department_emails")
+        .select("email, cc_email")
+        .eq("client_id", clientId)
+        .eq("department", "General")
+        .single();
+
+      if (!fallbackError && fallbackData) {
+        return {
+          email: fallbackData.email,
+          cc_email: fallbackData.cc_email,
+        };
+      }
+    }
+
+    console.warn(`[storage] No email configuration found for client "${clientId}", department "${department}"`);
+    return null;
+  }
+
+  /**
+   * Log email send attempt for audit trail
+   */
+  async logEmailSend(
+    interactionId: string,
+    department: string,
+    recipientEmail: string,
+    ccEmail: string | null,
+    status: "sent" | "failed",
+    errorMessage?: string
+  ): Promise<void> {
+    const { error } = await this.supabase.from("email_logs").insert({
+      interaction_id: interactionId,
+      department,
+      recipient_email: recipientEmail,
+      cc_email: ccEmail,
+      status,
+      error_message: errorMessage || null,
+    });
+
+    if (error) {
+      console.error("[storage] Failed to log email send:", error);
+      // Don't throw - logging failure should not affect the main flow
+    }
   }
 }
 

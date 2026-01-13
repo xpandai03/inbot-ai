@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
@@ -16,7 +16,7 @@ import { Card } from "@/components/ui/card";
 import { StatCard } from "@/components/stat-card";
 import { RecordsTable } from "@/components/records-table";
 import { BroadcastModal } from "@/components/broadcast-modal";
-import { useRole } from "@/lib/roleContext";
+import { useAuth } from "@/lib/authContext";
 import type { IntakeRecord, DashboardStats, Client } from "@shared/schema";
 import {
   Shield,
@@ -28,46 +28,59 @@ import {
   Clock,
   DollarSign,
   TrendingUp,
+  Loader2,
 } from "lucide-react";
 
 export default function Dashboard() {
-  const { role, logout } = useRole();
+  const { user, isLoading: authLoading, signOut } = useAuth();
   const [, setLocation] = useLocation();
   const [departmentFilter, setDepartmentFilter] = useState<string>("all");
   const [selectedClient, setSelectedClient] = useState<string>("all");
   const [markupPercentage, setMarkupPercentage] = useState([25]);
   const [broadcastOpen, setBroadcastOpen] = useState(false);
 
-  const isSuperAdmin = role === "superadmin";
+  const isSuperAdmin = user?.role === "super_admin";
+  const userClientId = user?.clientId;
 
   const { data: clients = [] } = useQuery<Client[]>({
     queryKey: ["/api/clients"],
     enabled: isSuperAdmin,
   });
 
+  // Set initial client filter for client admins
+  useEffect(() => {
+    if (!isSuperAdmin && userClientId) {
+      setSelectedClient(userClientId);
+    }
+  }, [isSuperAdmin, userClientId]);
+
+  // Determine effective client ID for API calls
+  const effectiveClientId = isSuperAdmin
+    ? selectedClient !== "all"
+      ? selectedClient
+      : undefined
+    : userClientId || undefined;
+
   const { data: records = [], isLoading } = useQuery<IntakeRecord[]>({
-    queryKey: ["/api/records", selectedClient],
+    queryKey: ["/api/records", effectiveClientId],
     queryFn: async () => {
-      const params = isSuperAdmin && selectedClient !== "all" 
-        ? `?clientId=${selectedClient}` 
-        : "";
+      const params = effectiveClientId ? `?clientId=${effectiveClientId}` : "";
       const response = await fetch(`/api/records${params}`);
       if (!response.ok) throw new Error("Failed to fetch records");
       return response.json();
     },
+    enabled: !authLoading,
   });
 
   const { data: stats } = useQuery<DashboardStats>({
-    queryKey: ["/api/stats", selectedClient],
+    queryKey: ["/api/stats", effectiveClientId],
     queryFn: async () => {
-      const params = isSuperAdmin && selectedClient !== "all" 
-        ? `?clientId=${selectedClient}` 
-        : "";
+      const params = effectiveClientId ? `?clientId=${effectiveClientId}` : "";
       const response = await fetch(`/api/stats${params}`);
       if (!response.ok) throw new Error("Failed to fetch stats");
       return response.json();
     },
-    enabled: isSuperAdmin,
+    enabled: isSuperAdmin && !authLoading,
   });
 
   const calculatedRevenue = useMemo(() => {
@@ -76,7 +89,17 @@ export default function Dashboard() {
     return stats.totalCost * markupMultiplier;
   }, [stats, markupPercentage]);
 
-  if (!role) {
+  // Show loading while checking auth
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    );
+  }
+
+  // Redirect to login if not authenticated
+  if (!user) {
     setLocation("/");
     return null;
   }
@@ -90,8 +113,8 @@ export default function Dashboard() {
     return true;
   });
 
-  const handleLogout = () => {
-    logout();
+  const handleLogout = async () => {
+    await signOut();
     setLocation("/");
   };
 
@@ -141,6 +164,9 @@ export default function Dashboard() {
           </div>
 
           <div className="flex items-center gap-3">
+            <span className="text-sm text-muted-foreground hidden sm:inline">
+              {user.email}
+            </span>
             <Badge
               variant={isSuperAdmin ? "default" : "secondary"}
               className="px-3 py-1 text-xs font-medium"
@@ -163,6 +189,7 @@ export default function Dashboard() {
               size="icon"
               onClick={handleLogout}
               data-testid="button-logout"
+              title="Sign out"
             >
               <LogOut className="w-4 h-4" />
             </Button>
