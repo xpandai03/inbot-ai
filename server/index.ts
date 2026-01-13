@@ -28,6 +28,12 @@ app.use(
 
 app.use(express.urlencoded({ extended: false }));
 
+// LOG EVERY SINGLE REQUEST TO PROVE SERVER IS RECEIVING TRAFFIC
+app.use((req, res, next) => {
+  console.log(`🔥 INCOMING REQUEST: ${req.method} ${req.path} ${req.originalUrl}`);
+  next();
+});
+
 export function log(message: string, source = "express") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {
     hour: "numeric",
