@@ -115,37 +115,33 @@ export async function registerRoutes(
   });
 
   app.post("/webhook/vapi", async (req, res) => {
+    console.log("[webhook/vapi] === WEBHOOK HIT ===");
     try {
       const payload = req.body;
+      console.log("[webhook/vapi] Payload type:", payload?.message?.type || "unknown");
 
       // Check if this is a real Vapi end-of-call-report
       if (isEndOfCallReport(payload)) {
         const vapiPayload = payload as VapiWebhookPayload;
         const callId = getCallId(vapiPayload);
 
-        console.log(`[webhook/vapi] Received end-of-call-report for call: ${callId}`);
+        console.log(`[webhook/vapi] Processing end-of-call-report for call: ${callId}`);
 
         // Transform Vapi payload to partial IntakeRecord
         const partialRecord = transformVapiToIntakeRecord(vapiPayload);
         const { rawText, ...recordFields } = partialRecord;
+        console.log("[webhook/vapi] Extracted rawText length:", rawText?.length || 0);
 
-        // Classify using AI agent
-        const classification = await classifyIntake({
-          rawText,
-          channel: "Voice",
-          clientId: recordFields.clientId,
-        });
-
-        // Merge classification into record
-        const record = {
+        // INSERT FIRST with pending classification
+        const pendingRecord = {
           ...recordFields,
-          intent: classification.intent,
-          department: classification.department,
-          transcriptSummary: classification.summary,
+          intent: "Pending",
+          department: "Pending",
+          transcriptSummary: rawText?.substring(0, 200) || "Processing...",
         };
 
-        // Validate the transformed record
-        const validation = insertIntakeRecordSchema.safeParse(record);
+        // Validate the pending record
+        const validation = insertIntakeRecordSchema.safeParse(pendingRecord);
         if (!validation.success) {
           console.error("[webhook/vapi] Validation failed:", validation.error.issues);
           return res.status(400).json({
@@ -154,18 +150,50 @@ export async function registerRoutes(
           });
         }
 
-        // Write to storage
+        // Write to storage FIRST (before classification)
+        console.log("[webhook/vapi] Inserting record...");
         const newRecord = await storage.createRecord(validation.data);
         console.log(`[webhook/vapi] Created record: ${newRecord.id}`);
 
-        // Trigger email notification (async, non-blocking)
-        triggerDepartmentEmail(newRecord).catch(() => {});
-
-        return res.status(201).json({
+        // Respond immediately
+        res.status(201).json({
           success: true,
           callId,
           record: newRecord,
         });
+
+        // THEN classify async and update (fire-and-forget)
+        (async () => {
+          try {
+            console.log("[webhook/vapi] Starting async classification...");
+            const classification = await classifyIntake({
+              rawText: rawText || "",
+              channel: "Voice",
+              clientId: recordFields.clientId,
+            });
+            console.log("[webhook/vapi] Classification result:", classification);
+
+            // Update the record with classification
+            await storage.updateRecord(newRecord.id, {
+              intent: classification.intent,
+              department: classification.department,
+              transcriptSummary: classification.summary,
+            });
+            console.log(`[webhook/vapi] Updated record ${newRecord.id} with classification`);
+
+            // Trigger email notification after classification
+            triggerDepartmentEmail({
+              ...newRecord,
+              intent: classification.intent,
+              department: classification.department,
+              transcriptSummary: classification.summary,
+            }).catch(() => {});
+          } catch (classifyError) {
+            console.error("[webhook/vapi] Async classification failed:", classifyError);
+          }
+        })();
+
+        return;
       }
 
       // Check if this is a Vapi event we should ignore (e.g., transcript, status-update)
@@ -213,9 +241,9 @@ export async function registerRoutes(
 
   // Twilio SMS webhook endpoint
   app.post("/webhook/twilio", async (req, res) => {
+    console.log("[webhook/twilio] === WEBHOOK HIT ===");
+    console.log("[webhook/twilio] Body keys:", Object.keys(req.body || {}));
     try {
-      console.log("[webhook/twilio] Received SMS webhook");
-
       // Check if Twilio is configured
       if (!isTwilioConfigured()) {
         console.warn("[webhook/twilio] Twilio not configured");
@@ -225,38 +253,31 @@ export async function registerRoutes(
       // Parse Twilio payload (form-urlencoded)
       const twilioPayload = parseTwilioPayload(req.body);
       if (!twilioPayload) {
-        console.error("[webhook/twilio] Invalid Twilio payload");
+        console.error("[webhook/twilio] Invalid Twilio payload, body:", req.body);
         return res.status(400).json({ error: "Invalid Twilio payload" });
       }
 
       const { MessageSid, From, Body } = twilioPayload;
-      console.log(`[webhook/twilio] SMS from ${From}: ${Body.substring(0, 50)}...`);
+      console.log(`[webhook/twilio] SMS from ${From}: "${Body.substring(0, 50)}..."`);
 
-      // Classify using AI agent
-      const classification = await classifyIntake({
-        rawText: Body,
-        channel: "SMS",
-        clientId: "client_demo",
-      });
-
-      // Create intake record
-      const record = {
+      // INSERT FIRST with pending classification
+      const pendingRecord = {
         name: "Unknown (SMS)",
         phone: formatPhoneNumber(From),
         address: "Not provided",
-        intent: classification.intent,
-        department: classification.department,
+        intent: "Pending",
+        department: "Pending",
         channel: "SMS" as const,
         language: "English",
         durationSeconds: 0,
-        cost: 0.0075, // SMS cost estimate
+        cost: 0.0075,
         timestamp: new Date().toISOString(),
-        transcriptSummary: classification.summary,
+        transcriptSummary: Body.substring(0, 200) || "Processing...",
         clientId: "client_demo",
       };
 
       // Validate
-      const validation = insertIntakeRecordSchema.safeParse(record);
+      const validation = insertIntakeRecordSchema.safeParse(pendingRecord);
       if (!validation.success) {
         console.error("[webhook/twilio] Validation failed:", validation.error.issues);
         return res.status(400).json({
@@ -265,16 +286,47 @@ export async function registerRoutes(
         });
       }
 
-      // Write to storage
+      // Write to storage FIRST
+      console.log("[webhook/twilio] Inserting record...");
       const newRecord = await storage.createRecord(validation.data);
       console.log(`[webhook/twilio] Created record: ${newRecord.id} (MessageSid: ${MessageSid})`);
 
-      // Trigger email notification (async, non-blocking)
-      triggerDepartmentEmail(newRecord).catch(() => {});
-
-      // Return TwiML response with thank-you message
+      // Return TwiML response immediately
       res.set("Content-Type", "text/xml");
-      return res.status(200).send(generateThankYouTwiml(newRecord.id));
+      res.status(200).send(generateThankYouTwiml(newRecord.id));
+
+      // THEN classify async and update (fire-and-forget)
+      (async () => {
+        try {
+          console.log("[webhook/twilio] Starting async classification...");
+          const classification = await classifyIntake({
+            rawText: Body,
+            channel: "SMS",
+            clientId: "client_demo",
+          });
+          console.log("[webhook/twilio] Classification result:", classification);
+
+          // Update the record with classification
+          await storage.updateRecord(newRecord.id, {
+            intent: classification.intent,
+            department: classification.department,
+            transcriptSummary: classification.summary,
+          });
+          console.log(`[webhook/twilio] Updated record ${newRecord.id} with classification`);
+
+          // Trigger email notification after classification
+          triggerDepartmentEmail({
+            ...newRecord,
+            intent: classification.intent,
+            department: classification.department,
+            transcriptSummary: classification.summary,
+          }).catch(() => {});
+        } catch (classifyError) {
+          console.error("[webhook/twilio] Async classification failed:", classifyError);
+        }
+      })();
+
+      return;
     } catch (error) {
       console.error("[webhook/twilio] Error:", error);
       res.status(500).json({ error: "Failed to process SMS webhook" });

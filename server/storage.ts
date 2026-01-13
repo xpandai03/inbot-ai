@@ -16,6 +16,7 @@ export interface IStorage {
   getRecords(clientId?: string): Promise<IntakeRecord[]>;
   getRecord(id: string): Promise<IntakeRecord | undefined>;
   createRecord(record: InsertIntakeRecord): Promise<IntakeRecord>;
+  updateRecord(id: string, updates: Partial<InsertIntakeRecord>): Promise<IntakeRecord | undefined>;
   getStats(clientId?: string): Promise<DashboardStats>;
   getClients(): Promise<Client[]>;
   // Email routing methods
@@ -193,6 +194,14 @@ export class MemStorage implements IStorage {
     return record;
   }
 
+  async updateRecord(id: string, updates: Partial<InsertIntakeRecord>): Promise<IntakeRecord | undefined> {
+    const existing = this.records.get(id);
+    if (!existing) return undefined;
+    const updated = { ...existing, ...updates };
+    this.records.set(id, updated);
+    return updated;
+  }
+
   async getStats(clientId?: string): Promise<DashboardStats> {
     let records = Array.from(this.records.values());
     
@@ -306,6 +315,31 @@ export class SupabaseStorage implements IStorage {
     }
 
     return dbToIntakeRecord(data as DBInteraction);
+  }
+
+  async updateRecord(id: string, updates: Partial<InsertIntakeRecord>): Promise<IntakeRecord | undefined> {
+    // Convert app updates to DB format
+    const dbUpdates: Partial<Omit<DBInteraction, "id">> = {};
+    if (updates.intent !== undefined) dbUpdates.raw_issue_text = updates.intent;
+    if (updates.department !== undefined) dbUpdates.department = updates.department;
+    if (updates.transcriptSummary !== undefined) dbUpdates.issue_summary = updates.transcriptSummary;
+    if (updates.name !== undefined) dbUpdates.name = updates.name;
+    if (updates.phone !== undefined) dbUpdates.phone = updates.phone;
+    if (updates.address !== undefined) dbUpdates.address = updates.address;
+
+    const { data, error } = await this.supabase
+      .from("interactions")
+      .update(dbUpdates)
+      .eq("id", id)
+      .select()
+      .single();
+
+    if (error) {
+      console.error("[SupabaseStorage.updateRecord]", error);
+      return undefined;
+    }
+
+    return data ? dbToIntakeRecord(data as DBInteraction) : undefined;
   }
 
   async getStats(clientId?: string): Promise<DashboardStats> {
