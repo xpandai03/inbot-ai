@@ -70,6 +70,8 @@ export default function Dashboard() {
       return response.json();
     },
     enabled: !authLoading,
+    // Poll every 5 seconds to show new records and classification updates
+    refetchInterval: 5000,
   });
 
   const { data: stats } = useQuery<DashboardStats>({
@@ -81,6 +83,7 @@ export default function Dashboard() {
       return response.json();
     },
     enabled: isSuperAdmin && !authLoading,
+    refetchInterval: 5000,
   });
 
   const calculatedRevenue = useMemo(() => {

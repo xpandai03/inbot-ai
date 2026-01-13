@@ -113,12 +113,22 @@ export function RecordsTable({ records, showCost = false, isLoading = false }: R
                 {record.address}
               </TableCell>
               <TableCell className="px-6 py-4">
-                <Badge variant="secondary" className="text-xs font-normal">
-                  {record.intent}
-                </Badge>
+                {record.intent === "Pending" ? (
+                  <Badge variant="outline" className="text-xs font-normal animate-pulse border-yellow-500/50 text-yellow-600">
+                    Classifying...
+                  </Badge>
+                ) : (
+                  <Badge variant="secondary" className="text-xs font-normal">
+                    {record.intent}
+                  </Badge>
+                )}
               </TableCell>
               <TableCell className="px-6 py-4 text-sm text-foreground">
-                {record.department}
+                {record.department === "Pending" ? (
+                  <span className="text-muted-foreground italic">Pending</span>
+                ) : (
+                  record.department
+                )}
               </TableCell>
               <TableCell className="px-6 py-4">
                 <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
