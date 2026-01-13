@@ -69,6 +69,27 @@ app.use((req, res, next) => {
   try {
     await registerRoutes(httpServer, app);
 
+    // Log all registered routes for debugging
+    console.log("[server] === REGISTERED ROUTES ===");
+    const routes: string[] = [];
+    app._router.stack.forEach((middleware: any) => {
+      if (middleware.route) {
+        // Direct route
+        const methods = Object.keys(middleware.route.methods).join(",").toUpperCase();
+        routes.push(`${methods} ${middleware.route.path}`);
+      } else if (middleware.name === "router") {
+        // Router middleware
+        middleware.handle.stack.forEach((handler: any) => {
+          if (handler.route) {
+            const methods = Object.keys(handler.route.methods).join(",").toUpperCase();
+            routes.push(`${methods} ${handler.route.path}`);
+          }
+        });
+      }
+    });
+    routes.forEach(r => console.log(`[server] Route: ${r}`));
+    console.log("[server] === END ROUTES ===");
+
     app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
       const status = err.status || err.statusCode || 500;
       const message = err.message || "Internal Server Error";
