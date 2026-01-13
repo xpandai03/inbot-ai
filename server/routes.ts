@@ -157,134 +157,143 @@ export async function registerRoutes(
     }
   });
 
+  // Store last Vapi payload for debugging
+  let lastVapiPayload: { timestamp: string; type: string; callId: string | null; error: string | null; body: unknown } | null = null;
+
+  // Debug endpoint to see last Vapi payload
+  app.get("/debug/vapi-last", (_req, res) => {
+    res.json(lastVapiPayload || { message: "No Vapi webhook received yet" });
+  });
+
+  // BULLETPROOF Vapi webhook - ALWAYS returns 200
   app.post("/webhook/vapi", async (req, res) => {
-    console.log("=======================================================");
-    console.log("[webhook/vapi] === WEBHOOK HIT ===");
-    console.log("[webhook/vapi] Time:", new Date().toISOString());
-    console.log("[webhook/vapi] Headers:", JSON.stringify(req.headers, null, 2));
-    console.log("[webhook/vapi] Body exists:", !!req.body);
-    console.log("[webhook/vapi] Body type:", typeof req.body);
-    console.log("=======================================================");
+    const timestamp = new Date().toISOString();
+    let callId: string | null = null;
+    let messageType: string = "unknown";
+    let errorMsg: string | null = null;
+
+    // ALWAYS return 200 to Vapi - wrap EVERYTHING in try/catch
     try {
-      const payload = req.body;
-      console.log("[webhook/vapi] Payload type:", payload?.message?.type || "unknown");
+      console.log("=======================================================");
+      console.log("[VAPI] WEBHOOK HIT");
+      console.log("[VAPI] Time:", timestamp);
+      console.log("[VAPI] Content-Type:", req.headers["content-type"]);
+      console.log("[VAPI] Body exists:", !!req.body);
+      console.log("[VAPI] Body type:", typeof req.body);
 
-      // Check if this is a real Vapi end-of-call-report
-      if (isEndOfCallReport(payload)) {
-        const vapiPayload = payload as VapiWebhookPayload;
-        const callId = getCallId(vapiPayload);
+      const payload = req.body || {};
+      messageType = payload?.message?.type || "unknown";
+      callId = payload?.message?.call?.id || null;
 
-        console.log(`[webhook/vapi] Processing end-of-call-report for call: ${callId}`);
+      console.log("[VAPI] Message type:", messageType);
+      console.log("[VAPI] Call ID:", callId);
+      console.log("[VAPI] Ended reason:", payload?.message?.endedReason || "N/A");
 
-        // Transform Vapi payload to partial IntakeRecord
-        const partialRecord = transformVapiToIntakeRecord(vapiPayload);
-        const { rawText, ...recordFields } = partialRecord;
-        console.log("[webhook/vapi] Extracted rawText length:", rawText?.length || 0);
-
-        // INSERT FIRST with pending classification
-        const pendingRecord = {
-          ...recordFields,
-          intent: "Pending",
-          department: "Pending",
-          transcriptSummary: rawText?.substring(0, 200) || "Processing...",
-        };
-
-        // Validate the pending record
-        const validation = insertIntakeRecordSchema.safeParse(pendingRecord);
-        if (!validation.success) {
-          console.error("[webhook/vapi] Validation failed:", validation.error.issues);
-          return res.status(400).json({
-            error: "Invalid transformed payload",
-            details: validation.error.issues,
-          });
-        }
-
-        // Write to storage FIRST (before classification)
-        console.log("[webhook/vapi] Inserting record...");
-        const newRecord = await storage.createRecord(validation.data);
-        console.log(`[webhook/vapi] Created record: ${newRecord.id}`);
-
-        // Respond immediately
-        res.status(201).json({
-          success: true,
+      // Store for debugging (truncate large fields)
+      lastVapiPayload = {
+        timestamp,
+        type: messageType,
+        callId,
+        error: null,
+        body: {
+          messageType,
           callId,
-          record: newRecord,
-        });
-
-        // THEN classify async and update (fire-and-forget)
-        (async () => {
-          try {
-            console.log("[webhook/vapi] Starting async classification...");
-            const classification = await classifyIntake({
-              rawText: rawText || "",
-              channel: "Voice",
-              clientId: recordFields.clientId,
-            });
-            console.log("[webhook/vapi] Classification result:", classification);
-
-            // Update the record with classification
-            await storage.updateRecord(newRecord.id, {
-              intent: classification.intent,
-              department: classification.department,
-              transcriptSummary: classification.summary,
-            });
-            console.log(`[webhook/vapi] Updated record ${newRecord.id} with classification`);
-
-            // Trigger email notification after classification
-            triggerDepartmentEmail({
-              ...newRecord,
-              intent: classification.intent,
-              department: classification.department,
-              transcriptSummary: classification.summary,
-            }).catch(() => {});
-          } catch (classifyError) {
-            console.error("[webhook/vapi] Async classification failed:", classifyError);
-          }
-        })();
-
-        return;
-      }
-
-      // Check if this is a Vapi event we should ignore (e.g., transcript, status-update)
-      if (payload.message && payload.message.type && payload.message.type !== "end-of-call-report") {
-        console.log(`[webhook/vapi] Ignoring event type: ${payload.message.type}`);
-        return res.status(200).json({ success: true, ignored: true });
-      }
-
-      // LEGACY: Handle simple/fake payloads for testing
-      console.log("[webhook/vapi] Processing legacy payload");
-      const record = {
-        name: payload.name || "Unknown Caller",
-        phone: payload.phone || "(555) 000-0000",
-        address: payload.address || "Address not provided",
-        intent: payload.intent || "General inquiry",
-        department: payload.department || "General",
-        channel: (payload.channel as "Voice" | "SMS") || "Voice",
-        language: payload.language || "English",
-        durationSeconds: payload.durationSeconds || Math.floor(Math.random() * 300) + 30,
-        cost: payload.cost || parseFloat((Math.random() * 0.5 + 0.1).toFixed(2)),
-        timestamp: new Date().toISOString(),
-        transcriptSummary: payload.transcriptSummary || "Intake record created via webhook.",
-        clientId: payload.clientId || "client_demo",
+          endedReason: payload?.message?.endedReason,
+          hasSummary: !!payload?.message?.summary,
+          hasTranscript: !!payload?.message?.transcript,
+          hasArtifact: !!payload?.message?.artifact,
+        },
       };
 
-      const validation = insertIntakeRecordSchema.safeParse(record);
-      if (!validation.success) {
-        return res.status(400).json({
-          error: "Invalid payload",
-          details: validation.error.issues,
-        });
+      // Process end-of-call-report
+      if (messageType === "end-of-call-report") {
+        console.log("[VAPI] Processing end-of-call-report...");
+
+        try {
+          const vapiPayload = payload as VapiWebhookPayload;
+          const partialRecord = transformVapiToIntakeRecord(vapiPayload);
+          const { rawText, ...recordFields } = partialRecord;
+
+          console.log("[VAPI] Extracted data - name:", recordFields.name, "phone:", recordFields.phone);
+          console.log("[VAPI] Raw text length:", rawText?.length || 0);
+
+          // INSERT FIRST with pending classification
+          const pendingRecord = {
+            ...recordFields,
+            intent: "Pending",
+            department: "Pending",
+            transcriptSummary: rawText?.substring(0, 200) || "Processing...",
+          };
+
+          const validation = insertIntakeRecordSchema.safeParse(pendingRecord);
+          if (!validation.success) {
+            console.error("[VAPI] Validation failed:", JSON.stringify(validation.error.issues));
+            errorMsg = `Validation failed: ${JSON.stringify(validation.error.issues)}`;
+            lastVapiPayload.error = errorMsg;
+            // Still return 200 to stop Vapi retries
+            return res.status(200).json({ ok: true, warning: "Validation failed", details: validation.error.issues });
+          }
+
+          console.log("[VAPI] Inserting record into database...");
+          const newRecord = await storage.createRecord(validation.data);
+          console.log("[VAPI] === INSERT SUCCESS === ID:", newRecord.id);
+
+          // Respond 200 immediately
+          res.status(200).json({ ok: true, recordId: newRecord.id });
+
+          // Background: classify and update (fire-and-forget)
+          setImmediate(async () => {
+            try {
+              console.log("[VAPI] Background: Starting classification...");
+              const classification = await classifyIntake({
+                rawText: rawText || "",
+                channel: "Voice",
+                clientId: recordFields.clientId,
+              });
+              console.log("[VAPI] Background: Classification result:", classification.intent, classification.department);
+
+              await storage.updateRecord(newRecord.id, {
+                intent: classification.intent,
+                department: classification.department,
+                transcriptSummary: classification.summary,
+              });
+              console.log("[VAPI] Background: Record updated with classification");
+
+              triggerDepartmentEmail({
+                ...newRecord,
+                intent: classification.intent,
+                department: classification.department,
+                transcriptSummary: classification.summary,
+              }).catch((e) => console.error("[VAPI] Background: Email failed:", e));
+            } catch (bgError) {
+              console.error("[VAPI] Background: Classification failed:", bgError);
+            }
+          });
+
+          return;
+        } catch (processError) {
+          console.error("[VAPI] Processing error:", processError);
+          errorMsg = String(processError);
+          lastVapiPayload.error = errorMsg;
+          // Still return 200
+          return res.status(200).json({ ok: true, warning: "Processing error", error: errorMsg });
+        }
       }
 
-      const newRecord = await storage.createRecord(validation.data);
+      // For all other Vapi event types (transcript, status-update, etc.)
+      console.log("[VAPI] Ignoring event type:", messageType);
+      return res.status(200).json({ ok: true, ignored: true, type: messageType });
 
-      // Trigger email notification (async, non-blocking)
-      triggerDepartmentEmail(newRecord).catch(() => {});
+    } catch (outerError) {
+      // CATCH-ALL: Log everything, still return 200
+      console.error("[VAPI] === OUTER ERROR ===");
+      console.error("[VAPI] Error:", outerError);
+      console.error("[VAPI] Stack:", outerError instanceof Error ? outerError.stack : "N/A");
+      errorMsg = String(outerError);
+      if (lastVapiPayload) lastVapiPayload.error = errorMsg;
 
-      res.status(201).json({ success: true, record: newRecord });
-    } catch (error) {
-      console.error("[webhook/vapi] Error:", error);
-      res.status(500).json({ error: "Failed to process webhook" });
+      // ALWAYS return 200 to stop Vapi retries
+      return res.status(200).json({ ok: true, warning: "Server error occurred", error: errorMsg });
     }
   });
 
