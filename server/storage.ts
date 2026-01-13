@@ -1,5 +1,11 @@
 import type { IntakeRecord, InsertIntakeRecord, DashboardStats, Client } from "@shared/schema";
 import { randomUUID } from "crypto";
+import {
+  getSupabaseClient,
+  dbToIntakeRecord,
+  intakeRecordToDB,
+  type DBInteraction,
+} from "./supabase";
 
 export interface IStorage {
   getRecords(clientId?: string): Promise<IntakeRecord[]>;
@@ -10,6 +16,7 @@ export interface IStorage {
 }
 
 const clients: Client[] = [
+  { id: "client_demo", name: "Demo Client" },
   { id: "city-springfield", name: "City of Springfield" },
   { id: "county-health", name: "County Health Dept" },
   { id: "metro-transit", name: "Metro Transit Authority" },
@@ -204,4 +211,117 @@ export class MemStorage implements IStorage {
   }
 }
 
-export const storage = new MemStorage();
+export class SupabaseStorage implements IStorage {
+  private supabase = getSupabaseClient();
+
+  async getRecords(clientId?: string): Promise<IntakeRecord[]> {
+    let query = this.supabase
+      .from("interactions")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (clientId && clientId !== "all") {
+      query = query.eq("client_id", clientId);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+      console.error("[SupabaseStorage.getRecords]", error);
+      throw new Error(`Failed to fetch records: ${error.message}`);
+    }
+
+    return (data as DBInteraction[]).map(dbToIntakeRecord);
+  }
+
+  async getRecord(id: string): Promise<IntakeRecord | undefined> {
+    const { data, error } = await this.supabase
+      .from("interactions")
+      .select("*")
+      .eq("id", id)
+      .single();
+
+    if (error) {
+      if (error.code === "PGRST116") {
+        return undefined;
+      }
+      console.error("[SupabaseStorage.getRecord]", error);
+      throw new Error(`Failed to fetch record: ${error.message}`);
+    }
+
+    return data ? dbToIntakeRecord(data as DBInteraction) : undefined;
+  }
+
+  async createRecord(insertRecord: InsertIntakeRecord): Promise<IntakeRecord> {
+    const dbRecord = intakeRecordToDB(insertRecord);
+
+    const { data, error } = await this.supabase
+      .from("interactions")
+      .insert(dbRecord)
+      .select()
+      .single();
+
+    if (error) {
+      console.error("[SupabaseStorage.createRecord]", error);
+      throw new Error(`Failed to create record: ${error.message}`);
+    }
+
+    return dbToIntakeRecord(data as DBInteraction);
+  }
+
+  async getStats(clientId?: string): Promise<DashboardStats> {
+    let query = this.supabase.from("interactions").select("*");
+
+    if (clientId && clientId !== "all") {
+      query = query.eq("client_id", clientId);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+      console.error("[SupabaseStorage.getStats]", error);
+      throw new Error(`Failed to fetch stats: ${error.message}`);
+    }
+
+    const records = (data as DBInteraction[]).map(dbToIntakeRecord);
+    const today = new Date().toISOString().split("T")[0];
+
+    const todayRecords = records.filter(
+      (r) => r.timestamp.split("T")[0] === today
+    );
+
+    const totalMinutesToday = Math.round(
+      todayRecords
+        .filter((r) => r.channel === "Voice")
+        .reduce((acc, r) => acc + r.durationSeconds, 0) / 60
+    );
+
+    const totalCost = records.reduce((acc, r) => acc + r.cost, 0);
+
+    return {
+      totalRecords: records.length,
+      totalMinutesToday,
+      totalCost,
+    };
+  }
+
+  async getClients(): Promise<Client[]> {
+    return clients;
+  }
+}
+
+// Storage factory with environment-based selection
+function createStorage(): IStorage {
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (supabaseUrl && supabaseKey) {
+    console.log("[storage] Using SupabaseStorage (production mode)");
+    return new SupabaseStorage();
+  }
+
+  console.log("[storage] Using MemStorage (development fallback)");
+  return new MemStorage();
+}
+
+export const storage: IStorage = createStorage();
