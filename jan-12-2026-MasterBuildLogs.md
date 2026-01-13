@@ -2488,5 +2488,165 @@ Output format:
   Do **Step 2** first --- that's almost certainly it.               
                                                                     
 ⏺ Let me check the current server configuration and apply the fix.  
-         
+       main)                                                         
+  ⎿  To https://github.com/xpandai03/inbot-ai.git                   
+        876471b..9eaa261  main -> main                              
+                                                                    
+⏺ Pushed. Railway should auto-redeploy. Here's what was fixed:      
+                                                                    
+  Changes Made                                                      
+                                                                    
+  1. Lazy Supabase initialization - The client is now created on    
+  first use, not at startup. This prevents crashes if env vars are  
+  malformed.                                                        
+  2. URL format validation - Added check that SUPABASE_URL starts   
+  with https://. Falls back to MemStorage if invalid.               
+  3. Startup logging - Added logs to show NODE_ENV, PORT, and       
+  whether env vars are defined.                                     
+                                                                    
+  ---                                                               
+  What to Check in Railway Logs                                     
+                                                                    
+  After redeploy, you should see:                                   
+                                                                    
+  [server] Starting InBot AI server...                              
+  [server] NODE_ENV: production                                     
+  [server] PORT: <railway-assigned-port>                            
+  [storage] Initializing storage...                                 
+  [storage] SUPABASE_URL defined: true                              
+  [storage] SUPABASE_SERVICE_ROLE_KEY defined: true                 
+  [storage] Using SupabaseStorage (production mode)                 
+  [express] serving on port <port>                                  
+                                                                    
+  ---                                                               
+  Important: Remove Manual PORT Variable                            
+                                                                    
+  If you manually set PORT=3000 in Railway Variables, delete it.    
+  Railway auto-injects the correct PORT. A manual override can cause
+   conflicts.                                                       
+                                                                    
+  ---                                                               
+  After Deploy Succeeds                                             
+                                                                    
+  Test these URLs:                                                  
+  - https://<domain>/ → Dashboard                                   
+  - https://<domain>/api/records → JSON data                        
+  - https://<domain>/api/clients → Client list                      
+                                                                    
+✻ Cooked for 2m 1s                                                  
+  We are still receiving HTTP 502 errors on the Railway-generated public domain
+
+AFTER a successful deploy and AFTER fixing Supabase initialization.
+
+This is now a **Railway networking / process exposure issue**, not an app logic issue.
+
+Context:
+
+- Service deploys successfully
+
+- Railway auto-redeploy completes
+
+- Public domain is attached to the service
+
+- Browser requests to https://<railway-domain>/ return 502
+
+- Supabase init has already been made lazy
+
+- app.listen(port, "0.0.0.0") is already applied
+
+- The crash loop is gone --- but 502 persists
+
+Goal:
+
+Determine **exactly why Railway cannot proxy traffic to the service** and fix it.
+
+Hard Constraints:
+
+- ❌ Do NOT change business logic
+
+- ❌ Do NOT touch Supabase logic
+
+- ❌ Do NOT touch Vapi ingestion
+
+- ❌ Do NOT refactor code structure
+
+- ❌ Do NOT add new dependencies
+
+- ❌ Do NOT add auth, RLS, or features
+
+- ✅ This is purely about process startup + port exposure
+
+Tasks (do these in order):
+
+1) Confirm process startup behavior
+
+   - Inspect the final startup logs
+
+   - Confirm whether the process exits immediately after startup
+
+   - Confirm whether the process remains alive
+
+   - Confirm whether there is ANY uncaught exception after "[express] serving on port"
+
+2) Confirm the exact port the server is listening on
+
+   - Log the resolved value of `process.env.PORT`
+
+   - Confirm that `app.listen()` is using that same value
+
+   - Confirm there is no second server binding to a different port
+
+3) Confirm Railway runtime expectations
+
+   - Verify the service type (Node, Docker, Nixpacks, etc.)
+
+   - Verify the start command being used by Railway
+
+   - Verify whether Railway expects the app to listen on `PORT` or `8080`
+
+   - Verify whether Railway requires an explicit `EXPOSE` directive
+
+4) Confirm HTTP routing
+
+   - Confirm whether the app responds to GET /
+
+   - If not, identify what happens on GET /
+
+   - Confirm whether Express has a default route or static serving configured
+
+5) Identify the exact failure mode causing the 502
+
+   - Is the process exiting?
+
+   - Is the port not open?
+
+   - Is the server listening on localhost only?
+
+   - Is the process starting too slowly and failing health checks?
+
+6) Propose the MINIMAL fix
+
+   - The smallest possible change to satisfy Railway's proxy
+
+   - Prefer configuration or startup changes over code
+
+   - If code change is required, limit it to `server/index.ts`
+
+Output Requirements:
+
+- A clear root cause (not speculation)
+
+- Evidence from logs or runtime behavior
+
+- One concrete fix with explanation
+
+- A verification checklist that proves the fix worked
+
+Important:
+
+- Do NOT "guess" fixes
+
+- Do NOT apply multiple changes at once
+
+- Treat this as a production incident postmortem            
                                                         
