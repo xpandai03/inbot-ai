@@ -159,16 +159,32 @@ export async function registerRoutes(
   });
 
   // Store last Vapi payload for debugging
-  let lastVapiPayload: { timestamp: string; type: string; callId: string | null; error: string | null; body: unknown } | null = null;
+  let lastVapiPayload: { timestamp: string; type: string; callId: string | null; error: string | null; body: unknown; path?: string } | null = null;
 
   // Debug endpoint to see last Vapi payload
   app.get("/debug/vapi-last", (_req, res) => {
     res.json(lastVapiPayload || { message: "No Vapi webhook received yet" });
   });
 
-  // BULLETPROOF Vapi webhook - ALWAYS returns 200
-  app.post("/webhook/vapi", async (req, res) => {
+  // DEBUG: Log ALL webhook-like requests to find where Vapi is actually posting
+  app.use((req, res, next) => {
+    if (req.method === "POST" && (req.path.includes("vapi") || req.path.includes("webhook"))) {
+      console.log("=======================================================");
+      console.log("[WEBHOOK-DEBUG] POST request detected");
+      console.log("[WEBHOOK-DEBUG] req.path:", req.path);
+      console.log("[WEBHOOK-DEBUG] req.originalUrl:", req.originalUrl);
+      console.log("[WEBHOOK-DEBUG] req.baseUrl:", req.baseUrl);
+      console.log("[WEBHOOK-DEBUG] Content-Type:", req.headers["content-type"]);
+      console.log("[WEBHOOK-DEBUG] Body type:", req.body?.message?.type || "no message.type");
+      console.log("=======================================================");
+    }
+    next();
+  });
+
+  // VAPI WEBHOOK HANDLER - handles the actual processing
+  const handleVapiWebhook = async (req: any, res: any) => {
     const timestamp = new Date().toISOString();
+    const requestPath = req.path || req.originalUrl || "unknown";
     let callId: string | null = null;
     let messageType: string = "unknown";
     let errorMsg: string | null = null;
@@ -178,6 +194,8 @@ export async function registerRoutes(
       console.log("=======================================================");
       console.log("[VAPI] WEBHOOK HIT");
       console.log("[VAPI] Time:", timestamp);
+      console.log("[VAPI] Path:", requestPath);
+      console.log("[VAPI] OriginalUrl:", req.originalUrl);
       console.log("[VAPI] Content-Type:", req.headers["content-type"]);
       console.log("[VAPI] Body exists:", !!req.body);
       console.log("[VAPI] Body type:", typeof req.body);
@@ -196,6 +214,7 @@ export async function registerRoutes(
         type: messageType,
         callId,
         error: null,
+        path: requestPath,
         body: {
           messageType,
           callId,
@@ -296,7 +315,18 @@ export async function registerRoutes(
       // ALWAYS return 200 to stop Vapi retries
       return res.status(200).json({ ok: true, warning: "Server error occurred", error: errorMsg });
     }
-  });
+  };
+
+  // Register Vapi webhook handler on MULTIPLE paths to catch wherever Vapi is posting
+  // Primary path
+  app.post("/webhook/vapi", handleVapiWebhook);
+  // Common alternative paths Vapi might use
+  app.post("/api/webhook/vapi", handleVapiWebhook);
+  app.post("/webhooks/vapi", handleVapiWebhook);
+  app.post("/vapi/webhook", handleVapiWebhook);
+  app.post("/vapi", handleVapiWebhook);
+
+  console.log("[routes] Vapi webhook registered on: /webhook/vapi, /api/webhook/vapi, /webhooks/vapi, /vapi/webhook, /vapi");
 
   // MessageSid tracking to prevent duplicate records from Twilio retries
   // (NOT phone-based - same phone can send multiple messages)
