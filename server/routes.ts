@@ -185,27 +185,39 @@ export async function registerRoutes(
   const handleVapiWebhook = async (req: any, res: any) => {
     const timestamp = new Date().toISOString();
     const requestPath = req.path || req.originalUrl || "unknown";
+
+    // IMMEDIATELY extract message type - before ANY other processing
+    const payload = req.body || {};
+    const messageType = payload?.message?.type || "unknown";
+
+    console.log("=======================================================");
+    console.log("[VAPI] WEBHOOK HIT - type:", messageType);
+
+    // ============================================================
+    // FAST PATH: ACK all non-end-of-call-report events immediately
+    // This prevents 503 errors and Vapi retries
+    // ============================================================
+    if (messageType !== "end-of-call-report") {
+      console.log(`[VAPI] ACK_ONLY event type: ${messageType}`);
+      return res.status(200).json({ ok: true, ack: true, type: messageType });
+    }
+
+    // ============================================================
+    // SLOW PATH: Process end-of-call-report only
+    // ============================================================
+    console.log("[VAPI] PROCESSING end-of-call-report");
+
     let callId: string | null = null;
-    let messageType: string = "unknown";
     let errorMsg: string | null = null;
 
     // ALWAYS return 200 to Vapi - wrap EVERYTHING in try/catch
     try {
-      console.log("=======================================================");
-      console.log("[VAPI] WEBHOOK HIT");
       console.log("[VAPI] Time:", timestamp);
       console.log("[VAPI] Path:", requestPath);
-      console.log("[VAPI] OriginalUrl:", req.originalUrl);
-      console.log("[VAPI] Content-Type:", req.headers["content-type"]);
-      console.log("[VAPI] Body exists:", !!req.body);
-      console.log("[VAPI] Body type:", typeof req.body);
 
-      const payload = req.body || {};
-      messageType = payload?.message?.type || "unknown";
       // Call ID can be in transport.callSid (top-level) or message.call.id (nested)
       callId = payload?.transport?.callSid || payload?.message?.call?.id || null;
 
-      console.log("[VAPI] Message type:", messageType);
       console.log("[VAPI] Call ID:", callId);
       console.log("[VAPI] transport.callSid:", payload?.transport?.callSid || "N/A");
       console.log("[VAPI] customer.number:", payload?.customer?.number || "N/A");
@@ -231,84 +243,69 @@ export async function registerRoutes(
         },
       };
 
-      // Process end-of-call-report
-      if (messageType === "end-of-call-report") {
-        console.log("[VAPI] Processing end-of-call-report...");
+      // Transform and insert
+      console.log("[VAPI] Transforming payload...");
+      const vapiPayload = payload as VapiWebhookPayload;
+      const partialRecord = transformVapiToIntakeRecord(vapiPayload);
+      const { rawText, ...recordFields } = partialRecord;
 
-        try {
-          const vapiPayload = payload as VapiWebhookPayload;
-          const partialRecord = transformVapiToIntakeRecord(vapiPayload);
-          const { rawText, ...recordFields } = partialRecord;
+      console.log("[VAPI] Extracted data - name:", recordFields.name, "phone:", recordFields.phone);
+      console.log("[VAPI] Raw text length:", rawText?.length || 0);
 
-          console.log("[VAPI] Extracted data - name:", recordFields.name, "phone:", recordFields.phone);
-          console.log("[VAPI] Raw text length:", rawText?.length || 0);
+      // INSERT FIRST with pending classification
+      const pendingRecord = {
+        ...recordFields,
+        intent: "Pending",
+        department: "Pending",
+        transcriptSummary: rawText?.substring(0, 200) || "Processing...",
+      };
 
-          // INSERT FIRST with pending classification
-          const pendingRecord = {
-            ...recordFields,
-            intent: "Pending",
-            department: "Pending",
-            transcriptSummary: rawText?.substring(0, 200) || "Processing...",
-          };
-
-          const validation = insertIntakeRecordSchema.safeParse(pendingRecord);
-          if (!validation.success) {
-            console.error("[VAPI] Validation failed:", JSON.stringify(validation.error.issues));
-            errorMsg = `Validation failed: ${JSON.stringify(validation.error.issues)}`;
-            lastVapiPayload.error = errorMsg;
-            // Still return 200 to stop Vapi retries
-            return res.status(200).json({ ok: true, warning: "Validation failed", details: validation.error.issues });
-          }
-
-          console.log("[VAPI] Inserting record into database...");
-          const newRecord = await storage.createRecord(validation.data);
-          console.log("[VAPI] === INSERT SUCCESS === ID:", newRecord.id);
-
-          // Respond 200 immediately
-          res.status(200).json({ ok: true, recordId: newRecord.id });
-
-          // Background: classify and update (fire-and-forget)
-          setImmediate(async () => {
-            try {
-              console.log("[VAPI] Background: Starting classification...");
-              const classification = await classifyIntake({
-                rawText: rawText || "",
-                channel: "Voice",
-                clientId: recordFields.clientId,
-              });
-              console.log("[VAPI] Background: Classification result:", classification.intent, classification.department);
-
-              await storage.updateRecord(newRecord.id, {
-                intent: classification.intent,
-                department: classification.department,
-                transcriptSummary: classification.summary,
-              });
-              console.log("[VAPI] Background: Record updated with classification");
-
-              triggerDepartmentEmail({
-                ...newRecord,
-                intent: classification.intent,
-                department: classification.department,
-                transcriptSummary: classification.summary,
-              }).catch((e) => console.error("[VAPI] Background: Email failed:", e));
-            } catch (bgError) {
-              console.error("[VAPI] Background: Classification failed:", bgError);
-            }
-          });
-
-          return;
-        } catch (processError) {
-          console.error("[VAPI] Processing error:", processError);
-          errorMsg = String(processError);
-          lastVapiPayload.error = errorMsg;
-          // Still return 200
-          return res.status(200).json({ ok: true, warning: "Processing error", error: errorMsg });
-        }
+      const validation = insertIntakeRecordSchema.safeParse(pendingRecord);
+      if (!validation.success) {
+        console.error("[VAPI] Validation failed:", JSON.stringify(validation.error.issues));
+        errorMsg = `Validation failed: ${JSON.stringify(validation.error.issues)}`;
+        lastVapiPayload.error = errorMsg;
+        // Still return 200 to stop Vapi retries
+        return res.status(200).json({ ok: true, warning: "Validation failed", details: validation.error.issues });
       }
 
-      // For all other Vapi event types (transcript, status-update, etc.)
-      console.log("[VAPI] Ignoring event type:", messageType);
-      return res.status(200).json({ ok: true, ignored: true, type: messageType });
+      console.log("[VAPI] Inserting record into database...");
+      const newRecord = await storage.createRecord(validation.data);
+      console.log("[VAPI] === INSERT SUCCESS === ID:", newRecord.id);
+
+      // Respond 200 immediately
+      res.status(200).json({ ok: true, recordId: newRecord.id });
+
+      // Background: classify and update (fire-and-forget)
+      setImmediate(async () => {
+        try {
+          console.log("[VAPI] Background: Starting classification...");
+          const classification = await classifyIntake({
+            rawText: rawText || "",
+            channel: "Voice",
+            clientId: recordFields.clientId,
+          });
+          console.log("[VAPI] Background: Classification result:", classification.intent, classification.department);
+
+          await storage.updateRecord(newRecord.id, {
+            intent: classification.intent,
+            department: classification.department,
+            transcriptSummary: classification.summary,
+          });
+          console.log("[VAPI] Background: Record updated with classification");
+
+          triggerDepartmentEmail({
+            ...newRecord,
+            intent: classification.intent,
+            department: classification.department,
+            transcriptSummary: classification.summary,
+          }).catch((e) => console.error("[VAPI] Background: Email failed:", e));
+        } catch (bgError) {
+          console.error("[VAPI] Background: Classification failed:", bgError);
+        }
+      });
+
+      return;
 
     } catch (outerError) {
       // CATCH-ALL: Log everything, still return 200
