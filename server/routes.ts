@@ -202,10 +202,13 @@ export async function registerRoutes(
 
       const payload = req.body || {};
       messageType = payload?.message?.type || "unknown";
-      callId = payload?.message?.call?.id || null;
+      // Call ID can be in transport.callSid (top-level) or message.call.id (nested)
+      callId = payload?.transport?.callSid || payload?.message?.call?.id || null;
 
       console.log("[VAPI] Message type:", messageType);
       console.log("[VAPI] Call ID:", callId);
+      console.log("[VAPI] transport.callSid:", payload?.transport?.callSid || "N/A");
+      console.log("[VAPI] customer.number:", payload?.customer?.number || "N/A");
       console.log("[VAPI] Ended reason:", payload?.message?.endedReason || "N/A");
 
       // Store for debugging (truncate large fields)
@@ -218,10 +221,13 @@ export async function registerRoutes(
         body: {
           messageType,
           callId,
+          transportCallSid: payload?.transport?.callSid || null,
+          customerNumber: payload?.customer?.number || null,
           endedReason: payload?.message?.endedReason,
-          hasSummary: !!payload?.message?.summary,
+          hasSummary: !!payload?.message?.summary || !!payload?.message?.analysis?.summary,
           hasTranscript: !!payload?.message?.transcript,
           hasArtifact: !!payload?.message?.artifact,
+          hasAnalysis: !!payload?.message?.analysis,
         },
       };
 

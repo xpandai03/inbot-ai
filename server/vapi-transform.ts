@@ -52,6 +52,14 @@ export interface VapiEndOfCallReport {
 
 export interface VapiWebhookPayload {
   message: VapiEndOfCallReport;
+  // Top-level fields (outside message)
+  customer?: {
+    number?: string;
+    numberE164?: string;
+  };
+  transport?: {
+    callSid?: string;
+  };
 }
 
 /**
@@ -159,22 +167,27 @@ export function detectLanguage(messages: VapiMessage[]): string {
 }
 
 /**
- * Extract phone number from Vapi call data
- * Checks multiple possible locations in the payload
+ * Extract phone number from Vapi payload
+ * Checks multiple possible locations - top-level and nested
  */
-export function extractPhoneNumber(call: VapiCall | undefined): string {
-  if (!call) return "(Unknown)";
+export function extractPhoneNumber(payload: VapiWebhookPayload): string {
+  // Try TOP-LEVEL customer first (actual Vapi structure)
+  const topLevelCustomer = payload.customer?.numberE164 || payload.customer?.number;
+  if (topLevelCustomer) return topLevelCustomer;
 
-  // Try customer number first (inbound calls)
-  const customerNumber = call.customer?.numberE164 || call.customer?.number;
-  if (customerNumber) return customerNumber;
+  // Try nested call.customer (older Vapi versions)
+  const call = payload.message?.call;
+  if (call) {
+    const nestedCustomer = call.customer?.numberE164 || call.customer?.number;
+    if (nestedCustomer) return nestedCustomer;
 
-  // Try phoneNumber object (some Vapi versions)
-  const phoneNumber = call.phoneNumber?.numberE164 || call.phoneNumber?.number;
-  if (phoneNumber) return phoneNumber;
+    // Try phoneNumber object
+    const phoneNumber = call.phoneNumber?.numberE164 || call.phoneNumber?.number;
+    if (phoneNumber) return phoneNumber;
 
-  // Web calls don't have phone numbers
-  if (call.type === "webCall") return "(Web Call)";
+    // Web calls don't have phone numbers
+    if (call.type === "webCall") return "(Web Call)";
+  }
 
   return "(Unknown)";
 }
@@ -190,11 +203,23 @@ export function transformVapiToIntakeRecord(payload: VapiWebhookPayload): Partia
   // Extract fields from transcript
   const name = extractName(messages);
   const address = extractAddress(messages);
-  const rawIssueText = buildRawIssueText(messages);
   const language = detectLanguage(messages);
 
-  // Get phone number from call data
-  const phone = extractPhoneNumber(msg.call);
+  // Build raw text from multiple sources (fallback chain)
+  let rawIssueText = buildRawIssueText(messages);
+  if (!rawIssueText || rawIssueText === "No issue description provided") {
+    // Try transcript string directly
+    rawIssueText = msg.transcript || "";
+  }
+  if (!rawIssueText && msg.analysis?.summary) {
+    // Use analysis summary as last resort
+    rawIssueText = msg.analysis.summary;
+  }
+
+  // Get phone number from FULL payload (not just msg.call)
+  const phone = extractPhoneNumber(payload);
+
+  console.log("[vapi-transform] Extracted - name:", name, "phone:", phone, "rawText length:", rawIssueText?.length);
 
   return {
     name,
@@ -207,13 +232,19 @@ export function transformVapiToIntakeRecord(payload: VapiWebhookPayload): Partia
     timestamp: msg.endedAt || new Date().toISOString(),
     clientId: "client_demo", // Hardcoded for Phase 1
     // Raw text for classification (not stored, used by classifier)
-    rawText: rawIssueText,
+    rawText: rawIssueText || "No description provided",
   };
 }
 
 /**
  * Get call ID for idempotency checks
+ * Checks transport.callSid (top-level) and message.call.id (nested)
  */
 export function getCallId(payload: VapiWebhookPayload): string | null {
+  // Try transport.callSid first (actual Vapi structure)
+  if (payload.transport?.callSid) {
+    return payload.transport.callSid;
+  }
+  // Fallback to nested call.id
   return payload.message?.call?.id || null;
 }
