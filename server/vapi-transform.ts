@@ -121,13 +121,25 @@ function extractNameFromText(text: string): { name: string | null; pattern: stri
     }
   }
 
-  // Pattern 2: Bare name at start of sentence (e.g., "Johnny Snow. There's a...")
+  // Pattern 2: Bare name anywhere in text (e.g., "Customer: Johnny Snow. Agent:...")
   // Look for 1-3 capitalized words followed by a period or sentence break
-  const bareNameMatch = text.match(/^([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})[.,]/);
-  if (bareNameMatch && bareNameMatch[1]) {
-    const words = bareNameMatch[1].split(/\s+/).filter(isValidNameWord);
-    if (words.length >= 1 && words.length <= 3) {
-      return { name: words.join(" "), pattern: "bare name" };
+  // Use word boundary to avoid matching mid-sentence
+  const bareNamePatterns = [
+    // After "Customer:" or similar speaker labels
+    /(?:Customer|Caller|User|Speaker):\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})[.,]/,
+    // At start of text
+    /^([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})[.,]/,
+    // After newline or double space
+    /(?:\n|  )([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})[.,]/,
+  ];
+
+  for (const pattern of bareNamePatterns) {
+    const bareNameMatch = text.match(pattern);
+    if (bareNameMatch && bareNameMatch[1]) {
+      const words = bareNameMatch[1].split(/\s+/).filter(isValidNameWord);
+      if (words.length >= 1 && words.length <= 3) {
+        return { name: words.join(" "), pattern: "bare name" };
+      }
     }
   }
 
