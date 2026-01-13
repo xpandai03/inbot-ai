@@ -161,9 +161,37 @@ export async function registerRoutes(
   // Store last Vapi payload for debugging
   let lastVapiPayload: { timestamp: string; type: string; callId: string | null; error: string | null; body: unknown; path?: string } | null = null;
 
+  // Circular buffer for last 20 Vapi events (for /debug/vapi-events)
+  interface VapiEventLog {
+    timestamp: string;
+    path: string;
+    messageType: string;
+    didProcess: boolean;
+    responseSent: boolean;
+    callId: string | null;
+    error: string | null;
+  }
+  const vapiEventBuffer: VapiEventLog[] = [];
+  const MAX_VAPI_EVENTS = 20;
+
+  function logVapiEvent(event: VapiEventLog) {
+    vapiEventBuffer.push(event);
+    if (vapiEventBuffer.length > MAX_VAPI_EVENTS) {
+      vapiEventBuffer.shift(); // Remove oldest
+    }
+  }
+
   // Debug endpoint to see last Vapi payload
   app.get("/debug/vapi-last", (_req, res) => {
     res.json(lastVapiPayload || { message: "No Vapi webhook received yet" });
+  });
+
+  // Debug endpoint to see last 20 Vapi events
+  app.get("/debug/vapi-events", (_req, res) => {
+    res.json({
+      count: vapiEventBuffer.length,
+      events: vapiEventBuffer.slice().reverse(), // Most recent first
+    });
   });
 
   // DEBUG: Log ALL webhook-like requests to find where Vapi is actually posting
@@ -191,21 +219,33 @@ export async function registerRoutes(
     const messageType = payload?.message?.type || "unknown";
 
     console.log("=======================================================");
-    console.log("[VAPI] WEBHOOK HIT - type:", messageType);
+    console.log("[VAPI] WEBHOOK HIT - type:", messageType, "path:", requestPath);
 
     // ============================================================
     // FAST PATH: ACK all non-end-of-call-report events immediately
     // This prevents 503 errors and Vapi retries
     // ============================================================
     if (messageType !== "end-of-call-report") {
-      console.log(`[VAPI] ACK_ONLY event type: ${messageType}`);
+      console.log(`[VAPI] ACK_ONLY event type: ${messageType} path: ${requestPath}`);
+
+      // Log to event buffer for debugging
+      logVapiEvent({
+        timestamp,
+        path: requestPath,
+        messageType,
+        didProcess: false,
+        responseSent: true,
+        callId: payload?.transport?.callSid || payload?.message?.call?.id || null,
+        error: null,
+      });
+
       return res.status(200).json({ ok: true, ack: true, type: messageType });
     }
 
     // ============================================================
     // SLOW PATH: Process end-of-call-report only
     // ============================================================
-    console.log("[VAPI] PROCESSING end-of-call-report");
+    console.log(`[VAPI] PROCESS_EOCR end-of-call-report path: ${requestPath}`);
 
     let callId: string | null = null;
     let errorMsg: string | null = null;
@@ -273,6 +313,17 @@ export async function registerRoutes(
       const newRecord = await storage.createRecord(validation.data);
       console.log("[VAPI] === INSERT SUCCESS === ID:", newRecord.id);
 
+      // Log to event buffer for debugging
+      logVapiEvent({
+        timestamp,
+        path: requestPath,
+        messageType: "end-of-call-report",
+        didProcess: true,
+        responseSent: true,
+        callId,
+        error: null,
+      });
+
       // Respond 200 immediately
       res.status(200).json({ ok: true, recordId: newRecord.id });
 
@@ -315,6 +366,17 @@ export async function registerRoutes(
       errorMsg = String(outerError);
       if (lastVapiPayload) lastVapiPayload.error = errorMsg;
 
+      // Log error to event buffer
+      logVapiEvent({
+        timestamp,
+        path: requestPath,
+        messageType: "end-of-call-report",
+        didProcess: false,
+        responseSent: true,
+        callId,
+        error: errorMsg,
+      });
+
       // ALWAYS return 200 to stop Vapi retries
       return res.status(200).json({ ok: true, warning: "Server error occurred", error: errorMsg });
     }
@@ -325,11 +387,12 @@ export async function registerRoutes(
   app.post("/webhook/vapi", handleVapiWebhook);
   // Common alternative paths Vapi might use
   app.post("/api/webhook/vapi", handleVapiWebhook);
+  app.post("/api/webhook", handleVapiWebhook); // Catch /api/webhook without /vapi suffix
   app.post("/webhooks/vapi", handleVapiWebhook);
   app.post("/vapi/webhook", handleVapiWebhook);
   app.post("/vapi", handleVapiWebhook);
 
-  console.log("[routes] Vapi webhook registered on: /webhook/vapi, /api/webhook/vapi, /webhooks/vapi, /vapi/webhook, /vapi");
+  console.log("[routes] Vapi webhook registered on: /webhook/vapi, /api/webhook/vapi, /api/webhook, /webhooks/vapi, /vapi/webhook, /vapi");
 
   // MessageSid tracking to prevent duplicate records from Twilio retries
   // (NOT phone-based - same phone can send multiple messages)
