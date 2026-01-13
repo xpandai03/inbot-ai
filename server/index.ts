@@ -4,6 +4,10 @@ import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 
+console.log("[server] Starting InBot AI server...");
+console.log(`[server] NODE_ENV: ${process.env.NODE_ENV}`);
+console.log(`[server] PORT: ${process.env.PORT || "3000 (default)"}`);
+
 const app = express();
 const httpServer = createServer(app);
 

@@ -212,7 +212,14 @@ export class MemStorage implements IStorage {
 }
 
 export class SupabaseStorage implements IStorage {
-  private supabase = getSupabaseClient();
+  private _supabase: ReturnType<typeof getSupabaseClient> | null = null;
+
+  private get supabase() {
+    if (!this._supabase) {
+      this._supabase = getSupabaseClient();
+    }
+    return this._supabase;
+  }
 
   async getRecords(clientId?: string): Promise<IntakeRecord[]> {
     let query = this.supabase
@@ -315,7 +322,17 @@ function createStorage(): IStorage {
   const supabaseUrl = process.env.SUPABASE_URL;
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
+  console.log("[storage] Initializing storage...");
+  console.log(`[storage] SUPABASE_URL defined: ${!!supabaseUrl}`);
+  console.log(`[storage] SUPABASE_SERVICE_ROLE_KEY defined: ${!!supabaseKey}`);
+
   if (supabaseUrl && supabaseKey) {
+    // Validate URL format before using Supabase
+    if (!supabaseUrl.startsWith("https://")) {
+      console.error(`[storage] ERROR: SUPABASE_URL must start with https:// (got: ${supabaseUrl.substring(0, 20)}...)`);
+      console.log("[storage] Falling back to MemStorage");
+      return new MemStorage();
+    }
     console.log("[storage] Using SupabaseStorage (production mode)");
     return new SupabaseStorage();
   }
