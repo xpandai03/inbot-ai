@@ -333,6 +333,11 @@ export default function Dashboard() {
           </div>
         </div>
 
+        <div className="flex items-center justify-between text-xs text-muted-foreground mb-2">
+          <span>New calls appear after the call ends (within 5-10 seconds)</span>
+          <span>Auto-refreshes every 5s</span>
+        </div>
+
         <RecordsTable
           records={filteredRecords}
           showCost={isSuperAdmin}
