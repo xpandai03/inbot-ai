@@ -8,8 +8,18 @@
 import { Resend } from "resend";
 import type { IntakeRecord } from "@shared/schema";
 
-// Initialize Resend client
-const resend = new Resend(process.env.RESEND_API_KEY);
+// Resend client - instantiated lazily when sending email
+let resendClient: Resend | null = null;
+
+function getResendClient(): Resend | null {
+  if (!process.env.RESEND_API_KEY) {
+    return null;
+  }
+  if (!resendClient) {
+    resendClient = new Resend(process.env.RESEND_API_KEY);
+  }
+  return resendClient;
+}
 
 // Sender email (must be verified in Resend dashboard)
 const FROM_EMAIL = process.env.RESEND_FROM_EMAIL || "InBot AI <notifications@xpandai.com>";
@@ -127,8 +137,9 @@ export async function sendDepartmentEmail(
   record: IntakeRecord,
   config: DepartmentEmailConfig
 ): Promise<EmailSendResult> {
-  // Check if Resend is configured
-  if (!process.env.RESEND_API_KEY) {
+  // Get Resend client (lazy initialization)
+  const resend = getResendClient();
+  if (!resend) {
     console.warn("[email] RESEND_API_KEY not configured, skipping email send");
     return { success: false, error: "RESEND_API_KEY not configured" };
   }
