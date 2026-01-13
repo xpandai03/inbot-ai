@@ -69,6 +69,9 @@ export function RecordsTable({ records, showCost = false, isLoading = false }: R
               Name
             </TableHead>
             <TableHead className="text-xs font-medium uppercase tracking-wide text-muted-foreground px-6 py-4">
+              Phone
+            </TableHead>
+            <TableHead className="text-xs font-medium uppercase tracking-wide text-muted-foreground px-6 py-4">
               Address
             </TableHead>
             <TableHead className="text-xs font-medium uppercase tracking-wide text-muted-foreground px-6 py-4">
@@ -102,6 +105,9 @@ export function RecordsTable({ records, showCost = false, isLoading = false }: R
             >
               <TableCell className="px-6 py-4 font-medium text-foreground">
                 {record.name}
+              </TableCell>
+              <TableCell className="px-6 py-4 text-sm text-muted-foreground tabular-nums">
+                {record.phone || (record.channel === "Voice" ? "(Web Call)" : "-")}
               </TableCell>
               <TableCell className="px-6 py-4 text-muted-foreground text-sm max-w-[200px] truncate">
                 {record.address}
