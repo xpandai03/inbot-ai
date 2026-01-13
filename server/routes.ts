@@ -82,7 +82,50 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
-  
+
+  // Debug endpoint - verify system state (remove after debugging)
+  app.get("/debug/status", async (_req, res) => {
+    const status = {
+      timestamp: new Date().toISOString(),
+      commit: process.env.RAILWAY_GIT_COMMIT_SHA || "unknown",
+      node_env: process.env.NODE_ENV,
+      auth_enabled: process.env.AUTH_ENABLED,
+      supabase_url_defined: !!process.env.SUPABASE_URL,
+      supabase_key_defined: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
+      twilio_configured: !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN),
+      openai_configured: !!process.env.OPENAI_API_KEY,
+    };
+    console.log("[debug/status] Status check:", status);
+    res.json(status);
+  });
+
+  // Debug endpoint - test insert (remove after debugging)
+  app.post("/debug/test-insert", async (_req, res) => {
+    console.log("[debug/test-insert] === TESTING INSERT ===");
+    try {
+      const testRecord = {
+        name: "DEBUG TEST",
+        phone: "+10000000000",
+        address: "Test Address",
+        intent: "Debug Test",
+        department: "Debug",
+        channel: "SMS" as const,
+        language: "English",
+        durationSeconds: 0,
+        cost: 0,
+        timestamp: new Date().toISOString(),
+        transcriptSummary: "Debug test record",
+        clientId: "client_demo",
+      };
+      const created = await storage.createRecord(testRecord);
+      console.log("[debug/test-insert] === SUCCESS ===", created.id);
+      res.json({ success: true, id: created.id, record: created });
+    } catch (error) {
+      console.error("[debug/test-insert] === FAILED ===", error);
+      res.status(500).json({ success: false, error: String(error) });
+    }
+  });
+
   // Protected routes - require auth when AUTH_ENABLED=true
   app.get("/api/records", conditionalAuth, async (req, res) => {
     try {
@@ -115,7 +158,13 @@ export async function registerRoutes(
   });
 
   app.post("/webhook/vapi", async (req, res) => {
+    console.log("=======================================================");
     console.log("[webhook/vapi] === WEBHOOK HIT ===");
+    console.log("[webhook/vapi] Time:", new Date().toISOString());
+    console.log("[webhook/vapi] Headers:", JSON.stringify(req.headers, null, 2));
+    console.log("[webhook/vapi] Body exists:", !!req.body);
+    console.log("[webhook/vapi] Body type:", typeof req.body);
+    console.log("=======================================================");
     try {
       const payload = req.body;
       console.log("[webhook/vapi] Payload type:", payload?.message?.type || "unknown");
@@ -241,8 +290,15 @@ export async function registerRoutes(
 
   // Twilio SMS webhook endpoint
   app.post("/webhook/twilio", async (req, res) => {
+    console.log("=======================================================");
     console.log("[webhook/twilio] === WEBHOOK HIT ===");
+    console.log("[webhook/twilio] Time:", new Date().toISOString());
+    console.log("[webhook/twilio] Headers:", JSON.stringify(req.headers, null, 2));
+    console.log("[webhook/twilio] Body exists:", !!req.body);
+    console.log("[webhook/twilio] Body type:", typeof req.body);
     console.log("[webhook/twilio] Body keys:", Object.keys(req.body || {}));
+    console.log("[webhook/twilio] Full body:", JSON.stringify(req.body, null, 2));
+    console.log("=======================================================");
     try {
       // Check if Twilio is configured
       if (!isTwilioConfigured()) {

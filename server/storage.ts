@@ -301,7 +301,11 @@ export class SupabaseStorage implements IStorage {
   }
 
   async createRecord(insertRecord: InsertIntakeRecord): Promise<IntakeRecord> {
+    console.log("[SupabaseStorage.createRecord] === INSERTING RECORD ===");
+    console.log("[SupabaseStorage.createRecord] Input:", JSON.stringify(insertRecord, null, 2));
+
     const dbRecord = intakeRecordToDB(insertRecord);
+    console.log("[SupabaseStorage.createRecord] DB record:", JSON.stringify(dbRecord, null, 2));
 
     const { data, error } = await this.supabase
       .from("interactions")
@@ -310,10 +314,13 @@ export class SupabaseStorage implements IStorage {
       .single();
 
     if (error) {
-      console.error("[SupabaseStorage.createRecord]", error);
+      console.error("[SupabaseStorage.createRecord] === INSERT FAILED ===");
+      console.error("[SupabaseStorage.createRecord] Error:", error);
       throw new Error(`Failed to create record: ${error.message}`);
     }
 
+    console.log("[SupabaseStorage.createRecord] === INSERT SUCCESS ===");
+    console.log("[SupabaseStorage.createRecord] Created ID:", data?.id);
     return dbToIntakeRecord(data as DBInteraction);
   }
 
