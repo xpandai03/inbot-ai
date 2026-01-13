@@ -178,6 +178,212 @@ const STREET_TYPES = "Street|St|Avenue|Ave|Drive|Dr|Road|Rd|Boulevard|Blvd|Lane|
 // Spoken number words
 const SPOKEN_NUMBERS = "zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand";
 
+// ============================================================
+// SPOKEN NUMBER → DIGIT NORMALIZATION
+// ============================================================
+// Converts spoken addresses like "Eleven twenty two Main Street"
+// to normalized form "1122 Main Street"
+// ============================================================
+
+// Basic number words → digits (0-19)
+const WORD_TO_DIGIT: Record<string, number> = {
+  zero: 0, oh: 0, o: 0,
+  one: 1, two: 2, three: 3, four: 4, five: 5,
+  six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+  eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15,
+  sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19,
+};
+
+// Tens words → base value
+const TENS_WORDS: Record<string, number> = {
+  twenty: 20, thirty: 30, forty: 40, fifty: 50,
+  sixty: 60, seventy: 70, eighty: 80, ninety: 90,
+};
+
+// Multiplier words
+const MULTIPLIERS: Record<string, number> = {
+  hundred: 100,
+  thousand: 1000,
+};
+
+// Street type keywords (stop parsing when we hit these)
+const STREET_KEYWORDS = new Set([
+  "street", "st", "avenue", "ave", "drive", "dr", "road", "rd",
+  "boulevard", "blvd", "lane", "ln", "way", "court", "ct",
+  "place", "pl", "circle", "cir", "terrace", "ter", "trail", "trl",
+  "parkway", "pkwy", "highway", "hwy",
+  // Also stop at common street name words
+  "main", "oak", "maple", "elm", "pine", "cedar", "first", "second",
+  "third", "fourth", "fifth", "north", "south", "east", "west",
+]);
+
+/**
+ * Check if a word is a number word
+ */
+function isNumberWord(word: string): boolean {
+  const lower = word.toLowerCase();
+  return (
+    WORD_TO_DIGIT[lower] !== undefined ||
+    TENS_WORDS[lower] !== undefined ||
+    MULTIPLIERS[lower] !== undefined
+  );
+}
+
+/**
+ * Parse a sequence of number words into a single number
+ * Handles: "eleven twenty two" → 1122, "five four eight four" → 5484
+ */
+function parseSpokenNumber(words: string[]): number | null {
+  if (words.length === 0) return null;
+
+  // Strategy 1: Try compound number interpretation (e.g., "eleven twenty two" = 11*100 + 22 = 1122)
+  // Strategy 2: Try digit-by-digit interpretation (e.g., "five four eight four" = 5484)
+
+  // First, check if this looks like digit-by-digit (all single digits 0-9)
+  const allSingleDigits = words.every(w => {
+    const lower = w.toLowerCase();
+    const val = WORD_TO_DIGIT[lower];
+    return val !== undefined && val <= 9;
+  });
+
+  if (allSingleDigits && words.length >= 2) {
+    // Digit-by-digit: "five four eight four" → "5484"
+    let result = "";
+    for (const w of words) {
+      result += WORD_TO_DIGIT[w.toLowerCase()];
+    }
+    return parseInt(result, 10);
+  }
+
+  // Compound number parsing
+  // Handle patterns like:
+  // - "eleven twenty two" → 1122 (11 * 100 + 22)
+  // - "fifty four eighty four" → 5484 (54 * 100 + 84)
+  // - "one thousand two hundred" → 1200
+  // - "twenty two" → 22
+
+  let result = 0;
+  let current = 0;
+  let hasHundredOrThousand = false;
+
+  for (const word of words) {
+    const lower = word.toLowerCase();
+
+    if (WORD_TO_DIGIT[lower] !== undefined) {
+      current += WORD_TO_DIGIT[lower];
+    } else if (TENS_WORDS[lower] !== undefined) {
+      current += TENS_WORDS[lower];
+    } else if (lower === "hundred") {
+      current *= 100;
+      hasHundredOrThousand = true;
+    } else if (lower === "thousand") {
+      current *= 1000;
+      hasHundredOrThousand = true;
+    }
+  }
+
+  result += current;
+
+  // Special case: "eleven twenty two" should be 1122, not 33
+  // If we have multiple "compound" groups without hundred/thousand, treat as digit groups
+  if (!hasHundredOrThousand && words.length >= 2) {
+    // Try to detect digit-group pattern: "eleven twenty two" = "11" + "22" = 1122
+    const groups: number[] = [];
+    let groupCurrent = 0;
+    let inGroup = false;
+
+    for (const word of words) {
+      const lower = word.toLowerCase();
+
+      if (WORD_TO_DIGIT[lower] !== undefined) {
+        if (!inGroup) {
+          groupCurrent = WORD_TO_DIGIT[lower];
+          inGroup = true;
+        } else {
+          // If we already have a base number and this is a single digit, it's a new group
+          groups.push(groupCurrent);
+          groupCurrent = WORD_TO_DIGIT[lower];
+        }
+      } else if (TENS_WORDS[lower] !== undefined) {
+        if (inGroup && groupCurrent > 0) {
+          // Previous number + this tens = new group
+          groups.push(groupCurrent);
+          groupCurrent = TENS_WORDS[lower];
+        } else {
+          groupCurrent = TENS_WORDS[lower];
+          inGroup = true;
+        }
+      }
+    }
+
+    if (inGroup) {
+      groups.push(groupCurrent);
+    }
+
+    // If we have multiple groups, concatenate them as strings
+    if (groups.length >= 2) {
+      const concatenated = groups.map(g => g.toString()).join("");
+      return parseInt(concatenated, 10);
+    }
+  }
+
+  return result > 0 ? result : null;
+}
+
+/**
+ * Normalize spoken numbers in an address to digits
+ *
+ * Examples:
+ *   "Eleven twenty two Main Street" → "1122 Main Street"
+ *   "five four eight four Main Street" → "5484 Main Street"
+ *   "fifty four eighty four Oak Drive" → "5484 Oak Drive"
+ *   "nine oh five Pine Lane" → "905 Pine Lane"
+ */
+export function normalizeSpokenAddress(input: string): string {
+  if (!input) return input;
+
+  const words = input.split(/\s+/);
+  const numberWords: string[] = [];
+  const restWords: string[] = [];
+  let foundStreetWord = false;
+
+  // Collect leading number words until we hit a street keyword or non-number word
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i];
+    const lower = word.toLowerCase().replace(/[.,!?]/g, "");
+
+    if (foundStreetWord || STREET_KEYWORDS.has(lower)) {
+      foundStreetWord = true;
+      restWords.push(word);
+    } else if (isNumberWord(lower)) {
+      numberWords.push(lower);
+    } else {
+      // Non-number word that's not a street keyword - start of street name
+      restWords.push(word);
+      foundStreetWord = true;
+    }
+  }
+
+  // If no number words found, return original
+  if (numberWords.length === 0) {
+    return input;
+  }
+
+  // Parse the number words
+  const parsedNumber = parseSpokenNumber(numberWords);
+
+  if (parsedNumber === null) {
+    return input;
+  }
+
+  // Reconstruct the address
+  const normalizedAddress = [parsedNumber.toString(), ...restWords].join(" ");
+
+  console.log(`[normalize] "${input}" → "${normalizedAddress}"`);
+
+  return normalizedAddress;
+}
+
 /**
  * Extract address from text using multiple patterns
  * Returns { address, source } for logging
@@ -240,6 +446,9 @@ function extractAddressFromText(text: string): { address: string | null; pattern
  * Extract street address from transcript (two-pass)
  * Pass A: artifact.messages (structured)
  * Pass B: transcript string (fallback)
+ *
+ * Applies spoken number normalization before returning:
+ *   "Eleven twenty two Main Street" → "1122 Main Street"
  */
 export function extractAddress(messages: VapiMessage[], transcript?: string): { address: string; source: string } {
   // Pass A: Try artifact.messages
@@ -247,7 +456,9 @@ export function extractAddress(messages: VapiMessage[], transcript?: string): { 
   for (const msg of userMessages) {
     const result = extractAddressFromText(msg.message);
     if (result.address) {
-      return { address: result.address, source: `messages/${result.pattern}` };
+      // Normalize spoken numbers → digits
+      const normalized = normalizeSpokenAddress(result.address);
+      return { address: normalized, source: `messages/${result.pattern}` };
     }
   }
 
@@ -255,7 +466,9 @@ export function extractAddress(messages: VapiMessage[], transcript?: string): { 
   if (transcript) {
     const result = extractAddressFromText(transcript);
     if (result.address) {
-      return { address: result.address, source: `transcript/${result.pattern}` };
+      // Normalize spoken numbers → digits
+      const normalized = normalizeSpokenAddress(result.address);
+      return { address: normalized, source: `transcript/${result.pattern}` };
     }
   }
 
