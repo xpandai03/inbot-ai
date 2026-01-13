@@ -209,17 +209,47 @@ export async function registerRoutes(
     next();
   });
 
-  // VAPI WEBHOOK HANDLER - handles the actual processing
+  // ============================================================
+  // VAPI WEBHOOK HANDLER
+  // ============================================================
+  // IMPORTANT: Vapi assistant webhook MUST point to Railway:
+  //   https://inbot-ai-production.up.railway.app/webhook/vapi
+  //
+  // Replit URLs (*.replit.dev) must NEVER be used - they will
+  // return 410 Gone and events will be rejected.
+  // ============================================================
   const handleVapiWebhook = async (req: any, res: any) => {
     const timestamp = new Date().toISOString();
     const requestPath = req.path || req.originalUrl || "unknown";
+    const requestHost = req.headers.host || "unknown";
+
+    // ============================================================
+    // STEP 1: LOG ABSOLUTE PROOF OF WHICH URL IS HIT
+    // ============================================================
+    console.log("=======================================================");
+    console.log(`[VAPI] HIT host=${requestHost} path=${requestPath}`);
+    console.log(`[VAPI] RAILWAY_PUBLIC_DOMAIN=${process.env.RAILWAY_PUBLIC_DOMAIN || "not set"}`);
+
+    // ============================================================
+    // STEP 2: HARD REJECT NON-RAILWAY DOMAINS
+    // Returns 410 Gone to make misconfiguration obvious
+    // ============================================================
+    const allowedHost = process.env.VAPI_ALLOWED_HOST || "inbot-ai-production.up.railway.app";
+    if (!requestHost.includes(allowedHost) && !requestHost.includes("localhost")) {
+      console.error(`[VAPI] REJECTED NON-RAILWAY REQUEST host=${requestHost} allowed=${allowedHost}`);
+      return res.status(410).json({
+        error: "Gone",
+        message: "This webhook endpoint has moved. Update Vapi assistant to use Railway URL.",
+        expected_host: allowedHost,
+        received_host: requestHost,
+      });
+    }
 
     // IMMEDIATELY extract message type - before ANY other processing
     const payload = req.body || {};
     const messageType = payload?.message?.type || "unknown";
 
-    console.log("=======================================================");
-    console.log("[VAPI] WEBHOOK HIT - type:", messageType, "path:", requestPath);
+    console.log(`[VAPI] ACCEPTED type=${messageType}`);
 
     // ============================================================
     // FAST PATH: ACK all non-end-of-call-report events immediately
@@ -382,17 +412,27 @@ export async function registerRoutes(
     }
   };
 
-  // Register Vapi webhook handler on MULTIPLE paths to catch wherever Vapi is posting
-  // Primary path
+  // ============================================================
+  // VAPI WEBHOOK ROUTES
+  // ============================================================
+  // PRODUCTION URL (the ONLY valid URL):
+  //   https://inbot-ai-production.up.railway.app/webhook/vapi
+  //
+  // DO NOT USE:
+  //   - Replit URLs (*.replit.dev) - will return 410 Gone
+  //   - Any other domain - will return 410 Gone
+  //
+  // Environment variable VAPI_ALLOWED_HOST controls the guard.
+  // ============================================================
   app.post("/webhook/vapi", handleVapiWebhook);
-  // Common alternative paths Vapi might use
   app.post("/api/webhook/vapi", handleVapiWebhook);
-  app.post("/api/webhook", handleVapiWebhook); // Catch /api/webhook without /vapi suffix
+  app.post("/api/webhook", handleVapiWebhook);
   app.post("/webhooks/vapi", handleVapiWebhook);
   app.post("/vapi/webhook", handleVapiWebhook);
   app.post("/vapi", handleVapiWebhook);
 
   console.log("[routes] Vapi webhook registered on: /webhook/vapi, /api/webhook/vapi, /api/webhook, /webhooks/vapi, /vapi/webhook, /vapi");
+  console.log(`[routes] VAPI_ALLOWED_HOST=${process.env.VAPI_ALLOWED_HOST || "inbot-ai-production.up.railway.app (default)"}`);
 
   // MessageSid tracking to prevent duplicate records from Twilio retries
   // (NOT phone-based - same phone can send multiple messages)
