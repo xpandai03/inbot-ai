@@ -14,6 +14,7 @@ import { classifyIntake } from "./intake-classifier";
 import {
   parseTwilioPayload,
   generateThankYouTwiml,
+  generateTwimlResponse,
   formatPhoneNumber,
   isTwilioConfigured,
 } from "./twilio";
@@ -297,38 +298,87 @@ export async function registerRoutes(
     }
   });
 
-  // Twilio SMS webhook endpoint
+  // MessageSid tracking to prevent duplicate records from Twilio retries
+  // (NOT phone-based - same phone can send multiple messages)
+  const processedMessageSids = new Set<string>();
+
+  // Store last Twilio payload for debugging
+  let lastTwilioPayload: { timestamp: string; messageSid: string | null; from: string | null; body: string | null; error: string | null } | null = null;
+
+  // Debug endpoint to see last Twilio payload
+  app.get("/debug/twilio-last", (_req, res) => {
+    res.json(lastTwilioPayload || { message: "No Twilio webhook received yet" });
+  });
+
+  // BULLETPROOF Twilio SMS webhook - ALWAYS returns 200/TwiML
   app.post("/webhook/twilio", async (req, res) => {
-    console.log("=======================================================");
-    console.log("[webhook/twilio] === WEBHOOK HIT ===");
-    console.log("[webhook/twilio] Time:", new Date().toISOString());
-    console.log("[webhook/twilio] Headers:", JSON.stringify(req.headers, null, 2));
-    console.log("[webhook/twilio] Body exists:", !!req.body);
-    console.log("[webhook/twilio] Body type:", typeof req.body);
-    console.log("[webhook/twilio] Body keys:", Object.keys(req.body || {}));
-    console.log("[webhook/twilio] Full body:", JSON.stringify(req.body, null, 2));
-    console.log("=======================================================");
+    const timestamp = new Date().toISOString();
+    let messageSid: string | null = null;
+    let fromNumber: string | null = null;
+    let messageBody: string | null = null;
+    let errorMsg: string | null = null;
+
+    // Helper to return TwiML (always 200)
+    const returnTwiml = (message?: string) => {
+      res.set("Content-Type", "text/xml");
+      res.status(200).send(generateTwimlResponse(message));
+    };
+
+    // ALWAYS return 200 to Twilio - wrap EVERYTHING in try/catch
     try {
+      console.log("=======================================================");
+      console.log("[TWILIO] WEBHOOK HIT");
+      console.log("[TWILIO] Time:", timestamp);
+      console.log("[TWILIO] Content-Type:", req.headers["content-type"]);
+      console.log("[TWILIO] Body keys:", Object.keys(req.body || {}));
+
       // Check if Twilio is configured
       if (!isTwilioConfigured()) {
-        console.warn("[webhook/twilio] Twilio not configured");
-        return res.status(503).json({ error: "SMS intake not configured" });
+        console.warn("[TWILIO] Not configured - returning empty TwiML");
+        lastTwilioPayload = { timestamp, messageSid: null, from: null, body: null, error: "Twilio not configured" };
+        return returnTwiml();
       }
 
-      // Parse Twilio payload (form-urlencoded)
+      // Parse Twilio payload
       const twilioPayload = parseTwilioPayload(req.body);
       if (!twilioPayload) {
-        console.error("[webhook/twilio] Invalid Twilio payload, body:", req.body);
-        return res.status(400).json({ error: "Invalid Twilio payload" });
+        console.error("[TWILIO] Invalid payload - returning empty TwiML");
+        lastTwilioPayload = { timestamp, messageSid: null, from: null, body: null, error: "Invalid payload" };
+        return returnTwiml();
       }
 
-      const { MessageSid, From, Body } = twilioPayload;
-      console.log(`[webhook/twilio] SMS from ${From}: "${Body.substring(0, 50)}..."`);
+      messageSid = twilioPayload.MessageSid;
+      fromNumber = twilioPayload.From;
+      messageBody = twilioPayload.Body;
+
+      console.log("[TWILIO] MessageSid:", messageSid);
+      console.log("[TWILIO] From:", fromNumber);
+      console.log("[TWILIO] Body:", messageBody?.substring(0, 100));
+
+      // Store for debugging
+      lastTwilioPayload = { timestamp, messageSid, from: fromNumber, body: messageBody?.substring(0, 100) || null, error: null };
+
+      // IDEMPOTENCY: Check if we already processed this MessageSid (Twilio retry)
+      if (processedMessageSids.has(messageSid)) {
+        console.log(`[TWILIO] DUPLICATE MessageSid ${messageSid} - already processed, skipping`);
+        return returnTwiml("Already received, thank you!");
+      }
+
+      // Mark as processed BEFORE insert to prevent race conditions
+      processedMessageSids.add(messageSid);
+
+      // Cleanup old MessageSids (keep last 1000)
+      if (processedMessageSids.size > 1000) {
+        const firstSid = processedMessageSids.values().next().value;
+        if (firstSid) processedMessageSids.delete(firstSid);
+      }
+
+      console.log("[TWILIO] NEW MESSAGE - INSERTING RECORD");
 
       // INSERT FIRST with pending classification
       const pendingRecord = {
         name: "Unknown (SMS)",
-        phone: formatPhoneNumber(From),
+        phone: formatPhoneNumber(fromNumber),
         address: "Not provided",
         intent: "Pending",
         department: "Pending",
@@ -337,64 +387,68 @@ export async function registerRoutes(
         durationSeconds: 0,
         cost: 0.0075,
         timestamp: new Date().toISOString(),
-        transcriptSummary: Body.substring(0, 200) || "Processing...",
+        transcriptSummary: messageBody?.substring(0, 200) || "Processing...",
         clientId: "client_demo",
       };
 
       // Validate
       const validation = insertIntakeRecordSchema.safeParse(pendingRecord);
       if (!validation.success) {
-        console.error("[webhook/twilio] Validation failed:", validation.error.issues);
-        return res.status(400).json({
-          error: "Invalid record",
-          details: validation.error.issues,
-        });
+        console.error("[TWILIO] Validation failed:", JSON.stringify(validation.error.issues));
+        errorMsg = `Validation failed: ${JSON.stringify(validation.error.issues)}`;
+        lastTwilioPayload.error = errorMsg;
+        // Still return 200 TwiML
+        return returnTwiml("Thank you for your message.");
       }
 
-      // Write to storage FIRST
-      console.log("[webhook/twilio] Inserting record...");
+      // INSERT into database
+      console.log("[TWILIO] Calling storage.createRecord...");
       const newRecord = await storage.createRecord(validation.data);
-      console.log(`[webhook/twilio] Created record: ${newRecord.id} (MessageSid: ${MessageSid})`);
+      console.log(`[TWILIO] === INSERT SUCCESS === ID: ${newRecord.id}`);
 
-      // Return TwiML response immediately
-      res.set("Content-Type", "text/xml");
-      res.status(200).send(generateThankYouTwiml(newRecord.id));
+      // Return TwiML immediately with reference ID
+      returnTwiml(`Thank you for your report. Reference #${newRecord.id.substring(0, 8)}. A representative will follow up.`);
 
-      // THEN classify async and update (fire-and-forget)
-      (async () => {
+      // Background: classify and update (fire-and-forget)
+      setImmediate(async () => {
         try {
-          console.log("[webhook/twilio] Starting async classification...");
+          console.log("[TWILIO] Background: Starting classification...");
           const classification = await classifyIntake({
-            rawText: Body,
+            rawText: messageBody || "",
             channel: "SMS",
             clientId: "client_demo",
           });
-          console.log("[webhook/twilio] Classification result:", classification);
+          console.log("[TWILIO] Background: Classification result:", classification.intent, classification.department);
 
-          // Update the record with classification
           await storage.updateRecord(newRecord.id, {
             intent: classification.intent,
             department: classification.department,
             transcriptSummary: classification.summary,
           });
-          console.log(`[webhook/twilio] Updated record ${newRecord.id} with classification`);
+          console.log("[TWILIO] Background: Record updated with classification");
 
-          // Trigger email notification after classification
           triggerDepartmentEmail({
             ...newRecord,
             intent: classification.intent,
             department: classification.department,
             transcriptSummary: classification.summary,
-          }).catch(() => {});
-        } catch (classifyError) {
-          console.error("[webhook/twilio] Async classification failed:", classifyError);
+          }).catch((e) => console.error("[TWILIO] Background: Email failed:", e));
+        } catch (bgError) {
+          console.error("[TWILIO] Background: Classification failed:", bgError);
         }
-      })();
+      });
 
       return;
-    } catch (error) {
-      console.error("[webhook/twilio] Error:", error);
-      res.status(500).json({ error: "Failed to process SMS webhook" });
+    } catch (outerError) {
+      // CATCH-ALL: Log everything, still return 200 TwiML
+      console.error("[TWILIO] === OUTER ERROR ===");
+      console.error("[TWILIO] Error:", outerError);
+      console.error("[TWILIO] Stack:", outerError instanceof Error ? outerError.stack : "N/A");
+      errorMsg = String(outerError);
+      if (lastTwilioPayload) lastTwilioPayload.error = errorMsg;
+
+      // ALWAYS return 200 TwiML to stop Twilio retries
+      return returnTwiml("Thank you for your message.");
     }
   });
 
