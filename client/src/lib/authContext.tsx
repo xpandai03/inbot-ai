@@ -23,6 +23,7 @@ interface AuthContextType {
 
   // Auth methods
   signInWithEmail: (email: string) => Promise<{ error: Error | null }>;
+  signInWithPassword: (email: string, password: string) => Promise<{ error: Error | null }>;
   signOut: () => Promise<void>;
 
   // Legacy compatibility
@@ -90,6 +91,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  // Sign in with password (for demo accounts)
+  const signInWithPassword = async (email: string, password: string) => {
+    try {
+      const { error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      if (error) {
+        console.error("[auth] Password sign in error:", error);
+        return { error: error as Error };
+      }
+
+      return { error: null };
+    } catch (err) {
+      console.error("[auth] Unexpected password sign in error:", err);
+      return { error: err as Error };
+    }
+  };
+
   // Sign out
   const signOut = async () => {
     await supabase.auth.signOut();
@@ -122,6 +143,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         session,
         isLoading,
         signInWithEmail,
+        signInWithPassword,
         signOut,
         // Legacy compatibility
         role,

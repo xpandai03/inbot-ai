@@ -5,15 +5,17 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/lib/authContext";
-import { Shield, Mail, Loader2, CheckCircle2, Phone, MessageSquare } from "lucide-react";
+import { Shield, Mail, Loader2, CheckCircle2, Phone, MessageSquare, Lock } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 export default function Landing() {
   const [, setLocation] = useLocation();
-  const { user, isLoading, signInWithEmail } = useAuth();
+  const { user, isLoading, signInWithEmail, signInWithPassword } = useAuth();
   const { toast } = useToast();
 
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [magicLinkSent, setMagicLinkSent] = useState(false);
 
@@ -38,6 +40,29 @@ export default function Landing() {
 
     setIsSubmitting(true);
 
+    // If password is provided, use password login
+    if (password) {
+      const { error } = await signInWithPassword(email.trim(), password);
+      setIsSubmitting(false);
+
+      if (error) {
+        toast({
+          title: "Sign in failed",
+          description: error.message || "Invalid email or password.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      // Password login successful - redirect happens via auth state change
+      toast({
+        title: "Welcome back!",
+        description: "Signing you in...",
+      });
+      return;
+    }
+
+    // Otherwise use magic link
     const { error } = await signInWithEmail(email.trim());
 
     setIsSubmitting(false);
@@ -153,6 +178,28 @@ export default function Landing() {
                     />
                   </div>
                 </div>
+
+                {showPassword && (
+                  <div className="space-y-2">
+                    <Label htmlFor="password" className="text-slate-300">
+                      Password
+                    </Label>
+                    <div className="relative">
+                      <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                      <Input
+                        id="password"
+                        type="password"
+                        placeholder="Enter password"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        className="pl-10 bg-slate-900/50 border-slate-600 text-white placeholder:text-slate-500 focus:border-blue-500"
+                        disabled={isSubmitting}
+                        autoComplete="current-password"
+                      />
+                    </div>
+                  </div>
+                )}
+
                 <Button
                   type="submit"
                   className="w-full bg-blue-600 hover:bg-blue-700 text-white"
@@ -161,12 +208,23 @@ export default function Landing() {
                   {isSubmitting ? (
                     <>
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Sending link...
+                      {password ? "Signing in..." : "Sending link..."}
                     </>
                   ) : (
-                    "Send magic link"
+                    password ? "Sign in" : "Send magic link"
                   )}
                 </Button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowPassword(!showPassword);
+                    if (showPassword) setPassword("");
+                  }}
+                  className="w-full text-sm text-slate-500 hover:text-slate-300 transition-colors"
+                >
+                  {showPassword ? "Use magic link instead" : "Sign in with password"}
+                </button>
               </form>
             )}
           </CardContent>
