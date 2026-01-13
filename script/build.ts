@@ -33,7 +33,7 @@ const allowlist = [
 ];
 
 async function buildAll() {
-  await rm("dist", { recursive: true, force: true });
+  await rm("dist_prod", { recursive: true, force: true });
 
   console.log("building client...");
   await viteBuild();
@@ -51,7 +51,7 @@ async function buildAll() {
     platform: "node",
     bundle: true,
     format: "cjs",
-    outfile: "dist/index.cjs",
+    outfile: "dist_prod/index.cjs",
     define: {
       "process.env.NODE_ENV": '"production"',
     },
