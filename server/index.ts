@@ -7,6 +7,7 @@ import { createServer } from "http";
 console.log("[server] Starting InBot AI server...");
 console.log(`[server] NODE_ENV: ${process.env.NODE_ENV}`);
 console.log(`[server] PORT: ${process.env.PORT || "3000 (default)"}`);
+console.log(`[build] commit: ${process.env.RAILWAY_GIT_COMMIT_SHA || "unknown"}`);
 
 const app = express();
 const httpServer = createServer(app);
