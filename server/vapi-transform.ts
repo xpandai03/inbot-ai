@@ -1,11 +1,14 @@
 /**
  * Vapi Webhook Payload Transformation
  *
- * Transforms Vapi end-of-call-report payloads into IntakeRecord format
- * for storage in Supabase.
+ * Transforms Vapi end-of-call-report payloads into partial IntakeRecord format.
+ * Classification (intent/department) is handled by the AI intake classifier.
  */
 
 import type { InsertIntakeRecord } from "@shared/schema";
+
+// Partial record type without classification fields (added by classifier)
+export type PartialIntakeRecord = Omit<InsertIntakeRecord, "intent" | "department" | "transcriptSummary">;
 
 // Vapi webhook payload types (relevant fields only)
 export interface VapiMessage {
@@ -134,75 +137,8 @@ export function buildRawIssueText(messages: VapiMessage[]): string {
     .trim() || "No issue description provided";
 }
 
-/**
- * Classify department based on issue keywords
- */
-export function classifyDepartment(rawIssueText: string): string {
-  const text = rawIssueText.toLowerCase();
-
-  // Public Works - infrastructure issues
-  if (/pothole|road|street|sidewalk|light|lamp|traffic|sign|drain|sewer|water main|pavement/.test(text)) {
-    return "Public Works";
-  }
-
-  // Public Safety - safety and emergency
-  if (/safety|emergency|crime|police|fire|danger|accident|threat|suspicious/.test(text)) {
-    return "Public Safety";
-  }
-
-  // Finance / Revenue - billing and payments
-  if (/tax|bill|payment|fee|permit|license|fine|revenue/.test(text)) {
-    return "Finance";
-  }
-
-  // Parks & Public Property
-  if (/park|playground|recreation|facility|building|property|trash|garbage|litter/.test(text)) {
-    return "Parks & Recreation";
-  }
-
-  // Sanitation
-  if (/trash|garbage|pickup|collection|waste|recycl/.test(text)) {
-    return "Sanitation";
-  }
-
-  return "General";
-}
-
-/**
- * Classify intent into a normalized category
- * Phase 1 categories: Pothole / Road Damage, Streetlight Issue, Water / Utilities,
- * Trash / Sanitation, Billing / Payment, General Inquiry
- */
-export function classifyIntent(rawIssueText: string, summary: string): string {
-  const text = (rawIssueText + " " + summary).toLowerCase();
-
-  // Pothole / Road Damage
-  if (/pothole|road\s*(damage|repair|broken|crack)|street\s*(damage|broken|crack)|pavement|asphalt|bump|crater/.test(text)) {
-    return "Pothole / Road Damage";
-  }
-
-  // Streetlight Issue
-  if (/street\s*light|lamp\s*post|light\s*(out|broken|not working|flickering)|dark\s*street|lighting/.test(text)) {
-    return "Streetlight Issue";
-  }
-
-  // Water / Utilities
-  if (/water|utility|utilities|pipe|leak|flood|hydrant|sewer|drain|gas|electric/.test(text)) {
-    return "Water / Utilities";
-  }
-
-  // Trash / Sanitation
-  if (/trash|garbage|waste|recycl|pickup|collection|litter|dump|sanitation|bin|container/.test(text)) {
-    return "Trash / Sanitation";
-  }
-
-  // Billing / Payment
-  if (/bill|billing|payment|pay|invoice|charge|fee|tax|account|balance|overdue/.test(text)) {
-    return "Billing / Payment";
-  }
-
-  return "General Inquiry";
-}
+// NOTE: classifyDepartment and classifyIntent have been moved to
+// server/intake-classifier.ts which uses LLM-based classification
 
 /**
  * Detect language from transcript (simple heuristic)
@@ -244,9 +180,10 @@ export function extractPhoneNumber(call: VapiCall | undefined): string {
 }
 
 /**
- * Transform Vapi end-of-call-report into IntakeRecord
+ * Transform Vapi end-of-call-report into partial IntakeRecord
+ * Returns record without intent/department/summary - those are added by the classifier
  */
-export function transformVapiToIntakeRecord(payload: VapiWebhookPayload): InsertIntakeRecord {
+export function transformVapiToIntakeRecord(payload: VapiWebhookPayload): PartialIntakeRecord & { rawText: string } {
   const msg = payload.message;
   const messages = msg.artifact?.messages || [];
 
@@ -254,31 +191,23 @@ export function transformVapiToIntakeRecord(payload: VapiWebhookPayload): Insert
   const name = extractName(messages);
   const address = extractAddress(messages);
   const rawIssueText = buildRawIssueText(messages);
-  const department = classifyDepartment(rawIssueText);
   const language = detectLanguage(messages);
 
   // Get phone number from call data
   const phone = extractPhoneNumber(msg.call);
 
-  // Use summary from analysis or top-level
-  const summary = msg.analysis?.summary || msg.summary || "Call completed";
-
-  // Classify intent based on issue text and summary
-  const intent = classifyIntent(rawIssueText, summary);
-
   return {
     name,
     phone,
     address,
-    intent,
-    department,
     channel: "Voice",
     language,
     durationSeconds: Math.round(msg.durationSeconds || 0),
     cost: msg.cost || 0,
     timestamp: msg.endedAt || new Date().toISOString(),
-    transcriptSummary: summary,
     clientId: "client_demo", // Hardcoded for Phase 1
+    // Raw text for classification (not stored, used by classifier)
+    rawText: rawIssueText,
   };
 }
 

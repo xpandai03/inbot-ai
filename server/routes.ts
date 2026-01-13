@@ -10,6 +10,13 @@ import {
 } from "./vapi-transform";
 import { sendDepartmentEmail, normalizeDepartment } from "./email";
 import { requireAuth, requireSuperAdmin, getEffectiveClientId } from "./auth";
+import { classifyIntake } from "./intake-classifier";
+import {
+  parseTwilioPayload,
+  generateThankYouTwiml,
+  formatPhoneNumber,
+  isTwilioConfigured,
+} from "./twilio";
 
 // Auth enforcement flag - set to true once frontend auth is ready
 const AUTH_ENABLED = process.env.AUTH_ENABLED === "true";
@@ -118,8 +125,24 @@ export async function registerRoutes(
 
         console.log(`[webhook/vapi] Received end-of-call-report for call: ${callId}`);
 
-        // Transform Vapi payload to IntakeRecord
-        const record = transformVapiToIntakeRecord(vapiPayload);
+        // Transform Vapi payload to partial IntakeRecord
+        const partialRecord = transformVapiToIntakeRecord(vapiPayload);
+        const { rawText, ...recordFields } = partialRecord;
+
+        // Classify using AI agent
+        const classification = await classifyIntake({
+          rawText,
+          channel: "Voice",
+          clientId: recordFields.clientId,
+        });
+
+        // Merge classification into record
+        const record = {
+          ...recordFields,
+          intent: classification.intent,
+          department: classification.department,
+          transcriptSummary: classification.summary,
+        };
 
         // Validate the transformed record
         const validation = insertIntakeRecordSchema.safeParse(record);
@@ -185,6 +208,76 @@ export async function registerRoutes(
     } catch (error) {
       console.error("[webhook/vapi] Error:", error);
       res.status(500).json({ error: "Failed to process webhook" });
+    }
+  });
+
+  // Twilio SMS webhook endpoint
+  app.post("/webhook/twilio", async (req, res) => {
+    try {
+      console.log("[webhook/twilio] Received SMS webhook");
+
+      // Check if Twilio is configured
+      if (!isTwilioConfigured()) {
+        console.warn("[webhook/twilio] Twilio not configured");
+        return res.status(503).json({ error: "SMS intake not configured" });
+      }
+
+      // Parse Twilio payload (form-urlencoded)
+      const twilioPayload = parseTwilioPayload(req.body);
+      if (!twilioPayload) {
+        console.error("[webhook/twilio] Invalid Twilio payload");
+        return res.status(400).json({ error: "Invalid Twilio payload" });
+      }
+
+      const { MessageSid, From, Body } = twilioPayload;
+      console.log(`[webhook/twilio] SMS from ${From}: ${Body.substring(0, 50)}...`);
+
+      // Classify using AI agent
+      const classification = await classifyIntake({
+        rawText: Body,
+        channel: "SMS",
+        clientId: "client_demo",
+      });
+
+      // Create intake record
+      const record = {
+        name: "Unknown (SMS)",
+        phone: formatPhoneNumber(From),
+        address: "Not provided",
+        intent: classification.intent,
+        department: classification.department,
+        channel: "SMS" as const,
+        language: "English",
+        durationSeconds: 0,
+        cost: 0.0075, // SMS cost estimate
+        timestamp: new Date().toISOString(),
+        transcriptSummary: classification.summary,
+        clientId: "client_demo",
+      };
+
+      // Validate
+      const validation = insertIntakeRecordSchema.safeParse(record);
+      if (!validation.success) {
+        console.error("[webhook/twilio] Validation failed:", validation.error.issues);
+        return res.status(400).json({
+          error: "Invalid record",
+          details: validation.error.issues,
+        });
+      }
+
+      // Write to storage
+      const newRecord = await storage.createRecord(validation.data);
+      console.log(`[webhook/twilio] Created record: ${newRecord.id} (MessageSid: ${MessageSid})`);
+
+      // Trigger email notification (async, non-blocking)
+      triggerDepartmentEmail(newRecord).catch(() => {});
+
+      // Return TwiML response with thank-you message
+      res.set("Content-Type", "text/xml");
+      return res.status(200).send(generateThankYouTwiml(newRecord.id));
+    } catch (error) {
+      console.error("[webhook/twilio] Error:", error);
+      res.status(500).json({ error: "Failed to process SMS webhook" });
     }
   });
 
