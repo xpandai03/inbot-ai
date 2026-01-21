@@ -1,4 +1,4 @@
-import type { IntakeRecord, InsertIntakeRecord, DashboardStats, Client } from "@shared/schema";
+import type { IntakeRecord, InsertIntakeRecord, DashboardStats, Client, DepartmentEmail } from "@shared/schema";
 import { randomUUID } from "crypto";
 import {
   getSupabaseClient,
@@ -29,6 +29,11 @@ export interface IStorage {
     status: "sent" | "failed",
     errorMessage?: string
   ): Promise<void>;
+  // Department email CRUD methods
+  listDepartmentEmails(clientId: string): Promise<DepartmentEmail[]>;
+  createDepartmentEmail(clientId: string, department: string, email: string, ccEmail?: string | null): Promise<DepartmentEmail>;
+  updateDepartmentEmail(id: string, clientId: string, email: string, ccEmail?: string | null): Promise<DepartmentEmail | null>;
+  deleteDepartmentEmail(id: string, clientId: string): Promise<boolean>;
 }
 
 const clients: Client[] = [
@@ -250,6 +255,27 @@ export class MemStorage implements IStorage {
   ): Promise<void> {
     console.warn("[MemStorage] logEmailSend not available in memory mode");
   }
+
+  // Stub implementations for department email CRUD (require Supabase)
+  async listDepartmentEmails(_clientId: string): Promise<DepartmentEmail[]> {
+    console.warn("[MemStorage] listDepartmentEmails not available in memory mode");
+    return [];
+  }
+
+  async createDepartmentEmail(_clientId: string, _department: string, _email: string, _ccEmail?: string | null): Promise<DepartmentEmail> {
+    console.warn("[MemStorage] createDepartmentEmail not available in memory mode");
+    throw new Error("Department email creation not available in memory mode");
+  }
+
+  async updateDepartmentEmail(_id: string, _clientId: string, _email: string, _ccEmail?: string | null): Promise<DepartmentEmail | null> {
+    console.warn("[MemStorage] updateDepartmentEmail not available in memory mode");
+    return null;
+  }
+
+  async deleteDepartmentEmail(_id: string, _clientId: string): Promise<boolean> {
+    console.warn("[MemStorage] deleteDepartmentEmail not available in memory mode");
+    return false;
+  }
 }
 
 export class SupabaseStorage implements IStorage {
@@ -455,6 +481,150 @@ export class SupabaseStorage implements IStorage {
       console.error("[storage] Failed to log email send:", error);
       // Don't throw - logging failure should not affect the main flow
     }
+  }
+
+  /**
+   * List all department email configurations for a client
+   */
+  async listDepartmentEmails(clientId: string): Promise<DepartmentEmail[]> {
+    const { data, error } = await this.supabase
+      .from("department_emails")
+      .select("*")
+      .eq("client_id", clientId)
+      .order("department", { ascending: true });
+
+    if (error) {
+      console.error("[storage] Failed to list department emails:", error);
+      throw new Error(`Failed to list department emails: ${error.message}`);
+    }
+
+    return (data || []).map((row) => ({
+      id: row.id,
+      clientId: row.client_id,
+      department: row.department,
+      email: row.email,
+      ccEmail: row.cc_email,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
+  }
+
+  /**
+   * Create a new department email configuration
+   */
+  async createDepartmentEmail(
+    clientId: string,
+    department: string,
+    email: string,
+    ccEmail?: string | null
+  ): Promise<DepartmentEmail> {
+    const { data, error } = await this.supabase
+      .from("department_emails")
+      .insert({
+        client_id: clientId,
+        department,
+        email,
+        cc_email: ccEmail || null,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      // Check for unique constraint violation
+      if (error.code === "23505") {
+        throw new Error(`Department "${department}" already has an email configuration`);
+      }
+      console.error("[storage] Failed to create department email:", error);
+      throw new Error(`Failed to create department email: ${error.message}`);
+    }
+
+    return {
+      id: data.id,
+      clientId: data.client_id,
+      department: data.department,
+      email: data.email,
+      ccEmail: data.cc_email,
+      createdAt: data.created_at,
+      updatedAt: data.updated_at,
+    };
+  }
+
+  /**
+   * Update an existing department email configuration
+   */
+  async updateDepartmentEmail(
+    id: string,
+    clientId: string,
+    email: string,
+    ccEmail?: string | null
+  ): Promise<DepartmentEmail | null> {
+    const { data, error } = await this.supabase
+      .from("department_emails")
+      .update({
+        email,
+        cc_email: ccEmail || null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", id)
+      .eq("client_id", clientId) // Ensure client ownership
+      .select()
+      .single();
+
+    if (error) {
+      if (error.code === "PGRST116") {
+        // No rows returned - not found or wrong client
+        return null;
+      }
+      console.error("[storage] Failed to update department email:", error);
+      throw new Error(`Failed to update department email: ${error.message}`);
+    }
+
+    return {
+      id: data.id,
+      clientId: data.client_id,
+      department: data.department,
+      email: data.email,
+      ccEmail: data.cc_email,
+      createdAt: data.created_at,
+      updatedAt: data.updated_at,
+    };
+  }
+
+  /**
+   * Delete a department email configuration
+   * Returns false if department is "General" (protected) or not found
+   */
+  async deleteDepartmentEmail(id: string, clientId: string): Promise<boolean> {
+    // First check if this is the "General" department (protected)
+    const { data: existing, error: checkError } = await this.supabase
+      .from("department_emails")
+      .select("department")
+      .eq("id", id)
+      .eq("client_id", clientId)
+      .single();
+
+    if (checkError || !existing) {
+      console.log("[storage] Department email not found for deletion");
+      return false;
+    }
+
+    if (existing.department === "General") {
+      console.log("[storage] Cannot delete General department email");
+      return false;
+    }
+
+    const { error } = await this.supabase
+      .from("department_emails")
+      .delete()
+      .eq("id", id)
+      .eq("client_id", clientId);
+
+    if (error) {
+      console.error("[storage] Failed to delete department email:", error);
+      return false;
+    }
+
+    return true;
   }
 }
 

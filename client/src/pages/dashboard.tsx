@@ -16,6 +16,7 @@ import { Card } from "@/components/ui/card";
 import { StatCard } from "@/components/stat-card";
 import { RecordsTable } from "@/components/records-table";
 import { BroadcastModal } from "@/components/broadcast-modal";
+import { DepartmentEmailSettings } from "@/components/department-email-settings";
 import { useAuth } from "@/lib/authContext";
 import type { IntakeRecord, DashboardStats, Client } from "@shared/schema";
 import {
@@ -29,6 +30,7 @@ import {
   DollarSign,
   TrendingUp,
   Loader2,
+  Settings,
 } from "lucide-react";
 
 export default function Dashboard() {
@@ -38,6 +40,7 @@ export default function Dashboard() {
   const [selectedClient, setSelectedClient] = useState<string>("all");
   const [markupPercentage, setMarkupPercentage] = useState([25]);
   const [broadcastOpen, setBroadcastOpen] = useState(false);
+  const [emailSettingsOpen, setEmailSettingsOpen] = useState(false);
 
   const isSuperAdmin = user?.role === "super_admin";
   const userClientId = user?.clientId;
@@ -316,6 +319,14 @@ export default function Dashboard() {
           <div className="flex items-center gap-2">
             <Button
               variant="outline"
+              onClick={() => setEmailSettingsOpen(true)}
+              data-testid="button-email-settings"
+            >
+              <Settings className="w-4 h-4 mr-2" />
+              Email Settings
+            </Button>
+            <Button
+              variant="outline"
               onClick={() => setBroadcastOpen(true)}
               data-testid="button-broadcast"
             >
@@ -348,6 +359,12 @@ export default function Dashboard() {
           open={broadcastOpen}
           onOpenChange={setBroadcastOpen}
           recipientCount={filteredRecords.length}
+        />
+
+        <DepartmentEmailSettings
+          open={emailSettingsOpen}
+          onOpenChange={setEmailSettingsOpen}
+          clientId={effectiveClientId}
         />
       </main>
     </div>

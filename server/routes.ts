@@ -1,7 +1,12 @@
 import type { Express, RequestHandler } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertIntakeRecordSchema, type IntakeRecord } from "@shared/schema";
+import {
+  insertIntakeRecordSchema,
+  insertDepartmentEmailSchema,
+  updateDepartmentEmailSchema,
+  type IntakeRecord,
+} from "@shared/schema";
 import {
   isEndOfCallReport,
   transformVapiToIntakeRecord,
@@ -171,6 +176,115 @@ export async function registerRoutes(
       res.json(clients);
     } catch (error) {
       res.status(500).json({ error: "Failed to fetch clients" });
+    }
+  });
+
+  // ============================================================
+  // DEPARTMENT EMAIL CONFIGURATION ENDPOINTS
+  // ============================================================
+
+  // List all department emails for the current client
+  app.get("/api/department-emails", conditionalAuth, async (req, res) => {
+    try {
+      const clientId = getEffectiveClientId(req);
+      if (!clientId) {
+        return res.status(400).json({ error: "Client ID required" });
+      }
+      const emails = await storage.listDepartmentEmails(clientId);
+      res.json(emails);
+    } catch (error) {
+      console.error("[routes] Failed to list department emails:", error);
+      res.status(500).json({ error: "Failed to fetch department emails" });
+    }
+  });
+
+  // Create a new department email configuration
+  app.post("/api/department-emails", conditionalAuth, async (req, res) => {
+    try {
+      const clientId = getEffectiveClientId(req);
+      if (!clientId) {
+        return res.status(400).json({ error: "Client ID required" });
+      }
+
+      const validation = insertDepartmentEmailSchema.safeParse({
+        ...req.body,
+        clientId,
+      });
+
+      if (!validation.success) {
+        return res.status(400).json({
+          error: "Validation failed",
+          details: validation.error.issues,
+        });
+      }
+
+      const { department, email, ccEmail } = validation.data;
+      const created = await storage.createDepartmentEmail(clientId, department, email, ccEmail);
+      res.status(201).json(created);
+    } catch (error) {
+      console.error("[routes] Failed to create department email:", error);
+      const message = error instanceof Error ? error.message : "Failed to create department email";
+      // Check for duplicate key error
+      if (message.includes("already has an email configuration")) {
+        return res.status(409).json({ error: message });
+      }
+      res.status(500).json({ error: message });
+    }
+  });
+
+  // Update an existing department email configuration
+  app.put("/api/department-emails/:id", conditionalAuth, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const clientId = getEffectiveClientId(req);
+      if (!clientId) {
+        return res.status(400).json({ error: "Client ID required" });
+      }
+
+      const validation = updateDepartmentEmailSchema.safeParse(req.body);
+
+      if (!validation.success) {
+        return res.status(400).json({
+          error: "Validation failed",
+          details: validation.error.issues,
+        });
+      }
+
+      const { email, ccEmail } = validation.data;
+      const updated = await storage.updateDepartmentEmail(id, clientId, email, ccEmail);
+
+      if (!updated) {
+        return res.status(404).json({ error: "Department email not found" });
+      }
+
+      res.json(updated);
+    } catch (error) {
+      console.error("[routes] Failed to update department email:", error);
+      res.status(500).json({ error: "Failed to update department email" });
+    }
+  });
+
+  // Delete a department email configuration
+  app.delete("/api/department-emails/:id", conditionalAuth, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const clientId = getEffectiveClientId(req);
+      if (!clientId) {
+        return res.status(400).json({ error: "Client ID required" });
+      }
+
+      const deleted = await storage.deleteDepartmentEmail(id, clientId);
+
+      if (!deleted) {
+        return res.status(400).json({
+          error: "Cannot delete this department email. It may not exist or is the protected 'General' department.",
+        });
+      }
+
+      res.json({ success: true });
+    } catch (error) {
+      console.error("[routes] Failed to delete department email:", error);
+      res.status(500).json({ error: "Failed to delete department email" });
     }
   });
 

@@ -33,3 +33,42 @@ export interface Client {
   id: string;
   name: string;
 }
+
+// Department Email Configuration
+export const KNOWN_DEPARTMENTS = [
+  "General",
+  "Public Works",
+  "Public Safety",
+  "Finance",
+  "Parks & Public Property",
+  "Parks & Recreation",
+  "Sanitation",
+  "Utilities",
+] as const;
+
+export type KnownDepartment = (typeof KNOWN_DEPARTMENTS)[number];
+
+export const departmentEmailSchema = z.object({
+  id: z.string(),
+  clientId: z.string(),
+  department: z.string().min(1, "Department is required"),
+  email: z.string().email("Invalid email address"),
+  ccEmail: z.string().email("Invalid CC email address").nullable().optional(),
+  createdAt: z.string().optional(),
+  updatedAt: z.string().optional(),
+});
+
+export const insertDepartmentEmailSchema = departmentEmailSchema.omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const updateDepartmentEmailSchema = z.object({
+  email: z.string().email("Invalid email address"),
+  ccEmail: z.string().email("Invalid CC email address").nullable().optional(),
+});
+
+export type DepartmentEmail = z.infer<typeof departmentEmailSchema>;
+export type InsertDepartmentEmail = z.infer<typeof insertDepartmentEmailSchema>;
+export type UpdateDepartmentEmail = z.infer<typeof updateDepartmentEmailSchema>;
