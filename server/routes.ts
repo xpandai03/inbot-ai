@@ -510,18 +510,10 @@ export async function registerRoutes(
       lastTwilioPayload = { timestamp, messageSid, from: fromNumber, body: messageBody?.substring(0, 100) || null, error: null };
 
       // IDEMPOTENCY: Check if we already processed this MessageSid (Twilio retry)
+      // NOTE: We only add to this Set AFTER successful DB insert (see below)
       if (processedMessageSids.has(messageSid)) {
         console.log(`[TWILIO] DUPLICATE MessageSid ${messageSid} - already processed, skipping`);
         return returnTwiml("Already received, thank you!");
-      }
-
-      // Mark as processed BEFORE insert to prevent race conditions
-      processedMessageSids.add(messageSid);
-
-      // Cleanup old MessageSids (keep last 1000)
-      if (processedMessageSids.size > 1000) {
-        const firstSid = processedMessageSids.values().next().value;
-        if (firstSid) processedMessageSids.delete(firstSid);
       }
 
       console.log("[TWILIO] NEW MESSAGE - EXTRACTING FIELDS");
@@ -575,9 +567,20 @@ export async function registerRoutes(
       }
 
       // INSERT into database
-      console.log("[TWILIO] Calling storage.createRecord...");
+      console.log("[TWILIO] INSERT ATTEMPTED - calling storage.createRecord...");
       const newRecord = await storage.createRecord(validation.data);
-      console.log(`[TWILIO] === INSERT SUCCESS === ID: ${newRecord.id}`);
+      console.log(`[TWILIO] INSERT SUCCEEDED - ID: ${newRecord.id}`);
+
+      // IDEMPOTENCY: Mark as processed ONLY AFTER successful insert
+      // This ensures failed inserts can be retried
+      processedMessageSids.add(messageSid);
+      console.log(`[TWILIO] DEDUP MARKED - MessageSid ${messageSid} added to processed set`);
+
+      // Cleanup old MessageSids (keep last 1000)
+      if (processedMessageSids.size > 1000) {
+        const firstSid = processedMessageSids.values().next().value;
+        if (firstSid) processedMessageSids.delete(firstSid);
+      }
 
       // Return TwiML immediately with reference ID
       returnTwiml(`Thank you for your report. Reference #${newRecord.id.substring(0, 8)}. A representative will follow up.`);
