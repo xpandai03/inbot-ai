@@ -92,19 +92,20 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
 
     // Extract metadata
     const metadata = user.user_metadata || {};
-    const role = metadata.role as string;
-    const clientId = metadata.client_id as string | null;
+    let role = metadata.role as string;
+    let clientId = metadata.client_id as string | null;
 
-    // Validate role
+    // Default new users to client_admin with demo client access
     if (role !== "super_admin" && role !== "client_admin") {
-      console.warn(`[auth] User ${user.email} has invalid role: ${role}`);
-      return res.status(403).json({ error: "Invalid user role" });
+      console.log(`[auth] User ${user.email} has no role, defaulting to client_admin`);
+      role = "client_admin";
+      clientId = "client_demo";
     }
 
-    // Client admins must have a client_id
+    // Client admins must have a client_id - use default if missing
     if (role === "client_admin" && !clientId) {
-      console.warn(`[auth] Client admin ${user.email} missing client_id`);
-      return res.status(403).json({ error: "Client admin missing client_id" });
+      console.log(`[auth] Client admin ${user.email} missing client_id, using client_demo`);
+      clientId = "client_demo";
     }
 
     // Attach user to request
@@ -142,17 +143,25 @@ export async function optionalAuth(req: Request, res: Response, next: NextFuncti
 
     if (!error && user) {
       const metadata = user.user_metadata || {};
-      const role = metadata.role as string;
-      const clientId = metadata.client_id as string | null;
+      let role = metadata.role as string;
+      let clientId = metadata.client_id as string | null;
 
-      if (role === "super_admin" || role === "client_admin") {
-        req.user = {
-          id: user.id,
-          email: user.email || "",
-          clientId: clientId || null,
-          role: role as "super_admin" | "client_admin",
-        };
+      // Default new users to client_admin with demo client access
+      if (role !== "super_admin" && role !== "client_admin") {
+        role = "client_admin";
+        clientId = "client_demo";
       }
+
+      if (role === "client_admin" && !clientId) {
+        clientId = "client_demo";
+      }
+
+      req.user = {
+        id: user.id,
+        email: user.email || "",
+        clientId: clientId || null,
+        role: role as "super_admin" | "client_admin",
+      };
     }
   } catch {
     // Ignore errors in optional auth

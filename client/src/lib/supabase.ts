@@ -46,24 +46,30 @@ export interface AuthUser {
 
 /**
  * Transform Supabase user to our app's AuthUser type
+ *
+ * If user has no role set, defaults to client_admin with client_demo access.
+ * This allows new users to sign in immediately after magic link verification.
  */
 export function toAuthUser(user: {
   id: string;
   email?: string;
   user_metadata?: UserMetadata;
-}): AuthUser | null {
+}): AuthUser {
   const metadata = user.user_metadata || {};
-  const role = metadata.role;
+  let role = metadata.role;
+  let clientId = metadata.client_id || null;
 
+  // Default new users to client_admin with demo client access
   if (role !== "super_admin" && role !== "client_admin") {
-    console.warn(`[auth] User ${user.email} has invalid role: ${role}`);
-    return null;
+    console.log(`[auth] User ${user.email} has no role, defaulting to client_admin`);
+    role = "client_admin";
+    clientId = "client_demo";
   }
 
   return {
     id: user.id,
     email: user.email || "",
-    clientId: metadata.client_id || null,
+    clientId,
     role,
   };
 }
