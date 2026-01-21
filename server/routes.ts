@@ -6,6 +6,7 @@ import {
   isEndOfCallReport,
   transformVapiToIntakeRecord,
   getCallId,
+  extractSmsFields,
   type VapiWebhookPayload,
 } from "./vapi-transform";
 import { sendDepartmentEmail, normalizeDepartment } from "./email";
@@ -438,8 +439,22 @@ export async function registerRoutes(
   // (NOT phone-based - same phone can send multiple messages)
   const processedMessageSids = new Set<string>();
 
-  // Store last Twilio payload for debugging
-  let lastTwilioPayload: { timestamp: string; messageSid: string | null; from: string | null; body: string | null; error: string | null } | null = null;
+  // Store last Twilio payload for debugging (includes extraction results)
+  let lastTwilioPayload: {
+    timestamp: string;
+    messageSid: string | null;
+    from: string | null;
+    body: string | null;
+    error: string | null;
+    extraction?: {
+      name: string;
+      address: string;
+      nameSource: string;
+      addressSource: string;
+      completeness: string;
+      addressIsComplete: boolean;
+    };
+  } | null = null;
 
   // Debug endpoint to see last Twilio payload
   app.get("/debug/twilio-last", (_req, res) => {
@@ -491,7 +506,7 @@ export async function registerRoutes(
       console.log("[TWILIO] From:", fromNumber);
       console.log("[TWILIO] Body:", messageBody?.substring(0, 100));
 
-      // Store for debugging
+      // Store for debugging (extraction added later)
       lastTwilioPayload = { timestamp, messageSid, from: fromNumber, body: messageBody?.substring(0, 100) || null, error: null };
 
       // IDEMPOTENCY: Check if we already processed this MessageSid (Twilio retry)
@@ -509,13 +524,35 @@ export async function registerRoutes(
         if (firstSid) processedMessageSids.delete(firstSid);
       }
 
-      console.log("[TWILIO] NEW MESSAGE - INSERTING RECORD");
+      console.log("[TWILIO] NEW MESSAGE - EXTRACTING FIELDS");
+
+      // ============================================================
+      // PHASE 1: Single-pass AI extraction for name + address
+      // Falls back to defaults if extraction fails
+      // Does NOT ask follow-up questions
+      // ============================================================
+      const extractionResult = await extractSmsFields(messageBody || "");
+      console.log("[TWILIO] Extraction result - name:", extractionResult.name, "| source:", extractionResult.nameSource);
+      console.log("[TWILIO] Extraction result - address:", extractionResult.address, "| source:", extractionResult.addressSource);
+      console.log("[TWILIO] Extraction completeness:", extractionResult.completeness, "| addressIsComplete:", extractionResult.addressIsComplete);
+
+      // Update debug payload with extraction results
+      if (lastTwilioPayload) {
+        lastTwilioPayload.extraction = {
+          name: extractionResult.name,
+          address: extractionResult.address,
+          nameSource: extractionResult.nameSource,
+          addressSource: extractionResult.addressSource,
+          completeness: extractionResult.completeness,
+          addressIsComplete: extractionResult.addressIsComplete,
+        };
+      }
 
       // INSERT FIRST with pending classification
       const pendingRecord = {
-        name: "Unknown (SMS)",
+        name: extractionResult.name,
         phone: formatPhoneNumber(fromNumber),
-        address: "Not provided",
+        address: extractionResult.address,
         intent: "Pending",
         department: "Pending",
         channel: "SMS" as const,

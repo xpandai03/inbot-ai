@@ -601,3 +601,298 @@ export function getCallId(payload: VapiWebhookPayload): string | null {
   // Fallback to nested call.id
   return payload.message?.call?.id || null;
 }
+
+// ============================================================
+// SMS FIELD EXTRACTION (Phase 1)
+// ============================================================
+//
+// PRODUCT INTENT:
+// - SMS intake is AI-assisted but NON-CONVERSATIONAL
+// - SMS produces BEST-EFFORT structured data, not guaranteed complete
+// - Voice remains the primary intake channel
+//
+// DATA QUALITY GUARANTEES:
+// - We DO: Extract name/address when explicitly stated
+// - We DO: Accept partial addresses (street name only)
+// - We DO: Normalize spoken numbers in addresses
+// - We DO NOT: Infer name from phone number
+// - We DO NOT: Ask follow-up questions
+// - We DO NOT: Retry failed extractions
+//
+// COMPLETENESS LEVELS:
+// - "complete": Name extracted AND full address (number + street + type)
+// - "partial": Address only OR partial address (no street number)
+// - "minimal": Neither name nor address extracted (intent only)
+//
+// ============================================================
+
+import OpenAI from "openai";
+
+// Lazy-initialized OpenAI client (shared with intake-classifier)
+let smsOpenaiClient: OpenAI | null = null;
+
+function getSmsOpenAIClient(): OpenAI | null {
+  if (!process.env.OPENAI_API_KEY) {
+    return null;
+  }
+  if (!smsOpenaiClient) {
+    smsOpenaiClient = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+    });
+  }
+  return smsOpenaiClient;
+}
+
+/**
+ * Completeness level for SMS extraction
+ * - "complete": Name + full address (number + street + type)
+ * - "partial": Address only, or partial address, or name only
+ * - "minimal": Neither name nor address extracted
+ */
+export type SmsCompleteness = "complete" | "partial" | "minimal";
+
+// SMS extraction result interface
+export interface SmsExtractionResult {
+  name: string;
+  address: string;
+  nameSource: "llm" | "regex" | "default";
+  addressSource: "llm" | "regex" | "default";
+  /** Completeness level: complete | partial | minimal */
+  completeness: SmsCompleteness;
+  /** True if address has street number (e.g., "1234 Main St" vs "Main St") */
+  addressIsComplete: boolean;
+}
+
+/**
+ * ACCEPTANCE CRITERIA: Valid Name
+ * --------------------------------
+ * A name IS extracted when:
+ * - Explicitly stated: "My name is John Smith"
+ * - Clearly provided: "John Smith here", "This is Maria Garcia"
+ * - 1-3 words that look like names (capitalized, not common words)
+ *
+ * A name is NOT extracted when:
+ * - Not explicitly provided in the message
+ * - Only a phone number is present (NEVER infer name from phone)
+ * - Ambiguous text that could be a name but isn't clear
+ *
+ * Default: "Unknown (SMS)" when no name can be confidently extracted
+ */
+
+/**
+ * ACCEPTANCE CRITERIA: Valid Address
+ * -----------------------------------
+ * A "complete" address has ALL of:
+ * - Street number (digits at start, e.g., "1234")
+ * - Street name (one or more words)
+ * - Street type suffix (Street, Ave, Rd, etc.)
+ *
+ * A "partial" address has SOME of:
+ * - Street name only (e.g., "Oak Avenue")
+ * - Street name + type but no number (e.g., "Main Street")
+ *
+ * "Not provided" is returned when:
+ * - No address-like text found
+ * - LLM explicitly returns null
+ * - Regex patterns find no match
+ */
+
+/**
+ * Check if an address is "complete" (has street number)
+ * Complete: "1234 Main Street" → true
+ * Partial: "Main Street", "Oak Ave" → false
+ */
+function isAddressComplete(address: string): boolean {
+  if (!address || address === "Not provided") return false;
+  // Must start with digits (street number)
+  return /^\d+\s+/.test(address.trim());
+}
+
+/**
+ * Determine completeness level based on extraction results
+ */
+function determineCompleteness(
+  nameSource: "llm" | "regex" | "default",
+  addressSource: "llm" | "regex" | "default",
+  addressIsComplete: boolean
+): SmsCompleteness {
+  const hasName = nameSource !== "default";
+  const hasAddress = addressSource !== "default";
+
+  if (hasName && hasAddress && addressIsComplete) {
+    return "complete";
+  }
+  if (hasName || hasAddress) {
+    return "partial";
+  }
+  return "minimal";
+}
+
+// System prompt for SMS field extraction (minimal, single-pass)
+const SMS_EXTRACTION_PROMPT = `You are extracting structured fields from a citizen SMS message.
+
+Extract ONLY if clearly stated. Do not guess or infer.
+
+Respond with JSON only (no markdown):
+{
+  "name": "extracted name or null",
+  "address": "extracted street address or null"
+}
+
+Rules:
+- name: Full name if explicitly provided (e.g., "John Smith", "Maria Garcia")
+- address: Street address with number and street name (e.g., "1234 Main Street")
+- Return null for any field not clearly stated
+- Do not extract city/state unless part of a street address
+- Do not extract phone numbers as names`;
+
+/**
+ * Extract name and address from SMS using LLM (single pass)
+ * Returns null values if extraction fails or times out
+ */
+async function extractSmsFieldsWithLLM(smsBody: string): Promise<{ name: string | null; address: string | null } | null> {
+  const client = getSmsOpenAIClient();
+  if (!client) {
+    console.log("[sms-extract] OpenAI client not available, skipping LLM extraction");
+    return null;
+  }
+
+  try {
+    const response = await client.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: SMS_EXTRACTION_PROMPT },
+        { role: "user", content: smsBody },
+      ],
+      temperature: 0,
+      max_tokens: 100,
+      response_format: { type: "json_object" },
+    });
+
+    const content = response.choices[0]?.message?.content;
+    if (!content) {
+      console.log("[sms-extract] Empty response from OpenAI");
+      return null;
+    }
+
+    const parsed = JSON.parse(content) as { name?: string | null; address?: string | null };
+    console.log("[sms-extract] LLM extraction result:", parsed);
+
+    return {
+      name: parsed.name || null,
+      address: parsed.address || null,
+    };
+  } catch (error) {
+    console.error("[sms-extract] LLM extraction error:", error);
+    return null;
+  }
+}
+
+/**
+ * Extract name from SMS using regex patterns (fallback)
+ * Reuses patterns from Voice extraction
+ */
+function extractSmsNameWithRegex(smsBody: string): string | null {
+  const result = extractNameFromText(smsBody);
+  if (result.name) {
+    console.log("[sms-extract] Regex name extraction:", result.name, "| pattern:", result.pattern);
+    return result.name;
+  }
+  return null;
+}
+
+/**
+ * Extract address from SMS using regex patterns (fallback)
+ * Reuses patterns from Voice extraction + applies normalization
+ */
+function extractSmsAddressWithRegex(smsBody: string): string | null {
+  const result = extractAddressFromText(smsBody);
+  if (result.address) {
+    // Apply spoken number normalization (e.g., "eleven twenty two" → "1122")
+    const normalized = normalizeSpokenAddress(result.address);
+    console.log("[sms-extract] Regex address extraction:", normalized, "| pattern:", result.pattern);
+    return normalized;
+  }
+  return null;
+}
+
+/**
+ * Extract name and address from SMS body
+ * Single-pass AI extraction with deterministic regex fallback
+ *
+ * Phase 1 behavior:
+ * - Attempts LLM extraction (3 second timeout)
+ * - Falls back to regex patterns
+ * - Returns defaults if extraction fails
+ * - Does NOT ask follow-up questions
+ */
+export async function extractSmsFields(smsBody: string): Promise<SmsExtractionResult> {
+  console.log("[sms-extract] ====== SMS EXTRACTION START ======");
+  console.log("[sms-extract] SMS body length:", smsBody.length);
+  console.log("[sms-extract] SMS body preview:", smsBody.substring(0, 100));
+
+  let name: string = "Unknown (SMS)";
+  let address: string = "Not provided";
+  let nameSource: "llm" | "regex" | "default" = "default";
+  let addressSource: "llm" | "regex" | "default" = "default";
+
+  // Step 1: Try LLM extraction with 3 second timeout
+  try {
+    const timeoutPromise = new Promise<null>((resolve) => {
+      setTimeout(() => resolve(null), 3000);
+    });
+
+    const llmResult = await Promise.race([
+      extractSmsFieldsWithLLM(smsBody),
+      timeoutPromise,
+    ]);
+
+    if (llmResult) {
+      if (llmResult.name && llmResult.name.trim().length > 0) {
+        name = llmResult.name.trim();
+        nameSource = "llm";
+        console.log("[sms-extract] LLM name accepted:", name);
+      }
+      if (llmResult.address && llmResult.address.trim().length > 0) {
+        // Apply spoken number normalization to LLM-extracted addresses too
+        address = normalizeSpokenAddress(llmResult.address.trim());
+        addressSource = "llm";
+        console.log("[sms-extract] LLM address accepted:", address);
+      }
+    } else {
+      console.log("[sms-extract] LLM extraction timed out or returned null");
+    }
+  } catch (error) {
+    console.error("[sms-extract] LLM extraction failed:", error);
+  }
+
+  // Step 2: Fallback to regex for any field not extracted by LLM
+  if (nameSource === "default") {
+    const regexName = extractSmsNameWithRegex(smsBody);
+    if (regexName) {
+      name = regexName;
+      nameSource = "regex";
+      console.log("[sms-extract] Regex name accepted:", name);
+    }
+  }
+
+  if (addressSource === "default") {
+    const regexAddress = extractSmsAddressWithRegex(smsBody);
+    if (regexAddress) {
+      address = regexAddress;
+      addressSource = "regex";
+      console.log("[sms-extract] Regex address accepted:", address);
+    }
+  }
+
+  // Step 3: Compute completeness
+  const addressComplete = isAddressComplete(address);
+  const completeness = determineCompleteness(nameSource, addressSource, addressComplete);
+
+  console.log("[sms-extract] ====== SMS EXTRACTION END ======");
+  console.log("[sms-extract] FINAL name:", name, "| source:", nameSource);
+  console.log("[sms-extract] FINAL address:", address, "| source:", addressSource);
+  console.log("[sms-extract] FINAL completeness:", completeness, "| addressIsComplete:", addressComplete);
+
+  return { name, address, nameSource, addressSource, completeness, addressIsComplete: addressComplete };
+}
