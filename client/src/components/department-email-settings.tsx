@@ -49,7 +49,8 @@ export function DepartmentEmailSettings({
   // Create mutation
   const createMutation = useMutation({
     mutationFn: async (data: { department: string; email: string; ccEmail?: string }) => {
-      const response = await fetch("/api/department-emails", {
+      const params = clientId ? `?clientId=${clientId}` : "";
+      const response = await fetch(`/api/department-emails${params}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(data),
@@ -78,7 +79,8 @@ export function DepartmentEmailSettings({
       id: string;
       data: { email: string; ccEmail?: string };
     }) => {
-      const response = await fetch(`/api/department-emails/${id}`, {
+      const params = clientId ? `?clientId=${clientId}` : "";
+      const response = await fetch(`/api/department-emails/${id}${params}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(data),
@@ -101,7 +103,8 @@ export function DepartmentEmailSettings({
   // Delete mutation
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
-      const response = await fetch(`/api/department-emails/${id}`, {
+      const params = clientId ? `?clientId=${clientId}` : "";
+      const response = await fetch(`/api/department-emails/${id}${params}`, {
         method: "DELETE",
       });
       if (!response.ok) {
