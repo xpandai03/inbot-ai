@@ -19,6 +19,20 @@ import {
   formatPhoneNumber,
   isTwilioConfigured,
 } from "./twilio";
+import {
+  isGuidedSmsEnabled,
+  processSmsWithSession,
+  deleteSession,
+  getFinalizedSessionData,
+  getThankYouMessage,
+  startCleanupTimer,
+  getAllActiveSessions,
+  getSessionCount,
+  getSessionDebugInfo,
+  clearSession,
+  type SmsSession,
+  type SmsFlowResult,
+} from "./sms-session";
 
 // Auth enforcement flag - set to true once frontend auth is ready
 const AUTH_ENABLED = process.env.AUTH_ENABLED === "true";
@@ -439,13 +453,14 @@ export async function registerRoutes(
   // (NOT phone-based - same phone can send multiple messages)
   const processedMessageSids = new Set<string>();
 
-  // Store last Twilio payload for debugging (includes extraction results)
+  // Store last Twilio payload for debugging (includes extraction results and session state)
   let lastTwilioPayload: {
     timestamp: string;
     messageSid: string | null;
     from: string | null;
     body: string | null;
     error: string | null;
+    guidedModeEnabled?: boolean;
     extraction?: {
       name: string;
       address: string;
@@ -454,12 +469,175 @@ export async function registerRoutes(
       completeness: string;
       addressIsComplete: boolean;
     };
+    session?: {
+      hasName: boolean;
+      hasAddress: boolean;
+      hasIssue: boolean;
+      askedForName: boolean;
+      askedForAddress: boolean;
+      messageCount: number;
+      action: string;
+    };
   } | null = null;
 
   // Debug endpoint to see last Twilio payload
   app.get("/debug/twilio-last", (_req, res) => {
     res.json(lastTwilioPayload || { message: "No Twilio webhook received yet" });
   });
+
+  // ============================================================
+  // GUIDED SMS INTAKE: Helper function to create record and classify
+  // ============================================================
+  async function createRecordAndClassify(
+    session: SmsSession,
+    fromNumber: string,
+    messageSid: string,
+    reason: string
+  ): Promise<{ recordId: string; responseMessage: string }> {
+    const { name, address, issue } = getFinalizedSessionData(session);
+
+    console.log(`[TWILIO-GUIDED] CREATE_RECORD reason=${reason} phone=*${fromNumber.slice(-4)}`);
+    console.log(`[TWILIO-GUIDED] Finalized: name=${name}, address=${address}, issue=${issue.substring(0, 50)}...`);
+
+    const pendingRecord = {
+      name,
+      phone: formatPhoneNumber(fromNumber),
+      address,
+      intent: "Pending",
+      department: "Pending",
+      channel: "SMS" as const,
+      language: "English",
+      durationSeconds: 0,
+      cost: 0.0075 * session.messageCount, // Cost per message
+      timestamp: new Date().toISOString(),
+      transcriptSummary: issue.substring(0, 200) || "Processing...",
+      clientId: "client_demo",
+    };
+
+    const validation = insertIntakeRecordSchema.safeParse(pendingRecord);
+    if (!validation.success) {
+      console.error("[TWILIO-GUIDED] Validation failed:", JSON.stringify(validation.error.issues));
+      throw new Error(`Validation failed: ${JSON.stringify(validation.error.issues)}`);
+    }
+
+    const newRecord = await storage.createRecord(validation.data);
+    console.log(`[TWILIO-GUIDED] COMPLETE phone=*${fromNumber.slice(-4)} recordId=${newRecord.id}`);
+
+    // Mark MessageSid as processed after successful insert
+    processedMessageSids.add(messageSid);
+
+    // Delete session after record creation
+    deleteSession(fromNumber);
+
+    // Background: classify and update
+    setImmediate(async () => {
+      try {
+        console.log("[TWILIO-GUIDED] Background: Starting classification...");
+        const classification = await classifyIntake({
+          rawText: issue,
+          channel: "SMS",
+          clientId: "client_demo",
+        });
+        console.log("[TWILIO-GUIDED] Background: Classification result:", classification.intent, classification.department);
+
+        await storage.updateRecord(newRecord.id, {
+          intent: classification.intent,
+          department: classification.department,
+          transcriptSummary: classification.summary,
+        });
+        console.log("[TWILIO-GUIDED] Background: Record updated with classification");
+
+        triggerDepartmentEmail({
+          ...newRecord,
+          intent: classification.intent,
+          department: classification.department,
+          transcriptSummary: classification.summary,
+        }).catch((e) => console.error("[TWILIO-GUIDED] Background: Email failed:", e));
+      } catch (bgError) {
+        console.error("[TWILIO-GUIDED] Background: Classification failed:", bgError);
+      }
+    });
+
+    return {
+      recordId: newRecord.id,
+      responseMessage: getThankYouMessage(newRecord.id),
+    };
+  }
+
+  // ============================================================
+  // GUIDED SMS INTAKE: Timeout handler for cleanup timer
+  // ============================================================
+  async function handleSessionTimeout(session: SmsSession): Promise<void> {
+    const hadData = !!(session.name || session.address || session.issue);
+    console.log(`[TWILIO-GUIDED] TIMEOUT_HANDLER phone=*${session.phoneNumber.slice(-4)} hadData=${hadData}`);
+
+    if (!hadData) {
+      console.log(`[TWILIO-GUIDED] TIMEOUT_SKIP no data to save`);
+      return;
+    }
+
+    try {
+      const { name, address, issue } = getFinalizedSessionData(session);
+
+      const pendingRecord = {
+        name,
+        phone: formatPhoneNumber(session.phoneNumber),
+        address,
+        intent: "Pending",
+        department: "Pending",
+        channel: "SMS" as const,
+        language: "English",
+        durationSeconds: 0,
+        cost: 0.0075 * session.messageCount,
+        timestamp: new Date().toISOString(),
+        transcriptSummary: issue.substring(0, 200) || "Abandoned session",
+        clientId: "client_demo",
+      };
+
+      const validation = insertIntakeRecordSchema.safeParse(pendingRecord);
+      if (!validation.success) {
+        console.error("[TWILIO-GUIDED] Timeout validation failed:", JSON.stringify(validation.error.issues));
+        return;
+      }
+
+      const newRecord = await storage.createRecord(validation.data);
+      console.log(`[TWILIO-GUIDED] TIMEOUT_RECORD_CREATED phone=*${session.phoneNumber.slice(-4)} recordId=${newRecord.id}`);
+
+      // Background classify
+      setImmediate(async () => {
+        try {
+          const classification = await classifyIntake({
+            rawText: issue,
+            channel: "SMS",
+            clientId: "client_demo",
+          });
+
+          await storage.updateRecord(newRecord.id, {
+            intent: classification.intent,
+            department: classification.department,
+            transcriptSummary: classification.summary,
+          });
+
+          triggerDepartmentEmail({
+            ...newRecord,
+            intent: classification.intent,
+            department: classification.department,
+            transcriptSummary: classification.summary,
+          }).catch(() => {});
+        } catch (err) {
+          console.error("[TWILIO-GUIDED] Timeout classification failed:", err);
+        }
+      });
+    } catch (err) {
+      console.error("[TWILIO-GUIDED] TIMEOUT_ERROR:", err);
+    }
+  }
+
+  // Start cleanup timer for session timeouts (if guided mode enabled)
+  if (isGuidedSmsEnabled()) {
+    console.log("[routes] Starting SMS session cleanup timer (guided mode enabled)");
+    startCleanupTimer(handleSessionTimeout);
+  }
 
   // BULLETPROOF Twilio SMS webhook - ALWAYS returns 200/TwiML
   app.post("/webhook/twilio", async (req, res) => {
@@ -482,6 +660,7 @@ export async function registerRoutes(
       console.log("[TWILIO] Time:", timestamp);
       console.log("[TWILIO] Content-Type:", req.headers["content-type"]);
       console.log("[TWILIO] Body keys:", Object.keys(req.body || {}));
+      console.log("[TWILIO] Guided mode enabled:", isGuidedSmsEnabled());
 
       // Check if Twilio is configured
       if (!isTwilioConfigured()) {
@@ -506,23 +685,100 @@ export async function registerRoutes(
       console.log("[TWILIO] From:", fromNumber);
       console.log("[TWILIO] Body:", messageBody?.substring(0, 100));
 
-      // Store for debugging (extraction added later)
-      lastTwilioPayload = { timestamp, messageSid, from: fromNumber, body: messageBody?.substring(0, 100) || null, error: null };
+      // Store for debugging
+      lastTwilioPayload = {
+        timestamp,
+        messageSid,
+        from: fromNumber,
+        body: messageBody?.substring(0, 100) || null,
+        error: null,
+        guidedModeEnabled: isGuidedSmsEnabled(),
+      };
 
       // IDEMPOTENCY: Check if we already processed this MessageSid (Twilio retry)
-      // NOTE: We only add to this Set AFTER successful DB insert (see below)
       if (processedMessageSids.has(messageSid)) {
         console.log(`[TWILIO] DUPLICATE MessageSid ${messageSid} - already processed, skipping`);
         return returnTwiml("Already received, thank you!");
       }
 
-      console.log("[TWILIO] NEW MESSAGE - EXTRACTING FIELDS");
+      // ============================================================
+      // GUIDED SMS INTAKE (when feature flag enabled)
+      // ============================================================
+      if (isGuidedSmsEnabled()) {
+        console.log("[TWILIO-GUIDED] Processing with guided flow...");
+
+        const flowResult = await processSmsWithSession(fromNumber, messageBody || "");
+
+        // Update debug payload with session state
+        if (lastTwilioPayload) {
+          lastTwilioPayload.session = {
+            hasName: !!flowResult.session.name,
+            hasAddress: !!flowResult.session.address,
+            hasIssue: !!flowResult.session.issue,
+            askedForName: flowResult.session.askedForName,
+            askedForAddress: flowResult.session.askedForAddress,
+            messageCount: flowResult.session.messageCount,
+            action: flowResult.action,
+          };
+        }
+
+        switch (flowResult.action) {
+          case "ask_followup": {
+            console.log(`[TWILIO-GUIDED] ASK_FOLLOWUP: ${flowResult.message}`);
+            // Mark this MessageSid as processed to prevent duplicate follow-ups on retry
+            processedMessageSids.add(messageSid);
+            return returnTwiml(flowResult.message);
+          }
+
+          case "complete": {
+            const { recordId, responseMessage } = await createRecordAndClassify(
+              flowResult.session,
+              fromNumber,
+              messageSid,
+              flowResult.reason
+            );
+            console.log(`[TWILIO-GUIDED] COMPLETE: recordId=${recordId}`);
+            return returnTwiml(responseMessage);
+          }
+
+          case "timeout": {
+            // Session timed out mid-flow - create record with what we have
+            console.log(`[TWILIO-GUIDED] TIMEOUT detected during processing`);
+            if (flowResult.hadData) {
+              const { recordId, responseMessage } = await createRecordAndClassify(
+                flowResult.session,
+                fromNumber,
+                messageSid,
+                "timeout"
+              );
+              return returnTwiml(responseMessage);
+            } else {
+              // No data - just clear and start fresh
+              deleteSession(fromNumber);
+              // Reprocess as new session
+              const freshResult = await processSmsWithSession(fromNumber, messageBody || "");
+              if (freshResult.action === "ask_followup") {
+                processedMessageSids.add(messageSid);
+                return returnTwiml(freshResult.message);
+              }
+              // Immediate complete (all fields in first message)
+              const { responseMessage } = await createRecordAndClassify(
+                freshResult.session,
+                fromNumber,
+                messageSid,
+                "all_fields"
+              );
+              return returnTwiml(responseMessage);
+            }
+          }
+        }
+      }
 
       // ============================================================
-      // PHASE 1: Single-pass AI extraction for name + address
-      // Falls back to defaults if extraction fails
-      // Does NOT ask follow-up questions
+      // LEGACY SINGLE-PASS SMS INTAKE (when feature flag disabled)
       // ============================================================
+      console.log("[TWILIO] Legacy single-pass flow");
+
       const extractionResult = await extractSmsFields(messageBody || "");
       console.log("[TWILIO] Extraction result - name:", extractionResult.name, "| source:", extractionResult.nameSource);
       console.log("[TWILIO] Extraction result - address:", extractionResult.address, "| source:", extractionResult.addressSource);
@@ -572,7 +828,6 @@ export async function registerRoutes(
       console.log(`[TWILIO] INSERT SUCCEEDED - ID: ${newRecord.id}`);
 
       // IDEMPOTENCY: Mark as processed ONLY AFTER successful insert
-      // This ensures failed inserts can be retried
       processedMessageSids.add(messageSid);
       console.log(`[TWILIO] DEDUP MARKED - MessageSid ${messageSid} added to processed set`);
 
@@ -626,6 +881,41 @@ export async function registerRoutes(
       // ALWAYS return 200 TwiML to stop Twilio retries
       return returnTwiml("Thank you for your message.");
     }
+  });
+
+  // ============================================================
+  // DEBUG ENDPOINTS: SMS Session Management
+  // ============================================================
+
+  // List all active sessions (phone last 4 digits only)
+  app.get("/debug/sms-sessions", (_req, res) => {
+    const sessions = getAllActiveSessions();
+    res.json({
+      guidedModeEnabled: isGuidedSmsEnabled(),
+      count: sessions.length,
+      maxSessions: 10000,
+      sessionTtlMs: 20 * 60 * 1000,
+      sessions,
+    });
+  });
+
+  // Lookup specific session by phone number
+  app.get("/debug/sms-session/:phone", (req, res) => {
+    const phone = req.params.phone;
+    const session = getSessionDebugInfo(phone);
+
+    if (session) {
+      res.json({ found: true, session });
+    } else {
+      res.json({ found: false, phone: phone.slice(-4) });
+    }
+  });
+
+  // Manual session clear
+  app.delete("/debug/sms-session/:phone", (req, res) => {
+    const phone = req.params.phone;
+    const deleted = clearSession(phone);
+    res.json({ deleted, phone: phone.slice(-4) });
   });
 
   return httpServer;
