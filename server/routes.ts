@@ -116,6 +116,7 @@ export async function registerRoutes(
       twilio_configured: !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN),
       openai_configured: !!process.env.OPENAI_API_KEY,
       resend_configured: !!process.env.RESEND_API_KEY,
+      resend_from_email: process.env.RESEND_FROM_EMAIL || "(using default: notifications@xpandai.com)",
     };
     console.log("[debug/status] Status check:", status);
     res.json(status);
