@@ -32,7 +32,7 @@ export function DepartmentEmailSettings({
   const [editingEmail, setEditingEmail] = useState<DepartmentEmail | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  // Fetch department emails
+  // Fetch department emails (only when a specific client is selected)
   const { data: emails = [], isLoading } = useQuery<DepartmentEmail[]>({
     queryKey: ["/api/department-emails", clientId],
     queryFn: async () => {
@@ -43,7 +43,7 @@ export function DepartmentEmailSettings({
       }
       return response.json();
     },
-    enabled: open,
+    enabled: open && !!clientId,
   });
 
   // Create mutation
@@ -196,7 +196,17 @@ export function DepartmentEmailSettings({
           </DialogHeader>
 
           <div className="space-y-4 py-4">
-            {!hasGeneralConfigured && !isLoading && (
+            {!clientId && (
+              <Alert variant="destructive">
+                <AlertTriangle className="h-4 w-4" />
+                <AlertDescription>
+                  Please select a specific client from the filter dropdown to configure email settings.
+                  Department emails cannot be configured when viewing "All Clients".
+                </AlertDescription>
+              </Alert>
+            )}
+
+            {clientId && !hasGeneralConfigured && !isLoading && (
               <Alert>
                 <AlertTriangle className="h-4 w-4" />
                 <AlertDescription>
@@ -208,9 +218,9 @@ export function DepartmentEmailSettings({
 
             <div className="flex items-center justify-between">
               <p className="text-sm text-muted-foreground">
-                {emails.length} department{emails.length !== 1 ? "s" : ""} configured
+                {clientId ? `${emails.length} department${emails.length !== 1 ? "s" : ""} configured` : "Select a client to view configurations"}
               </p>
-              <Button onClick={handleAddClick} data-testid="button-add-department">
+              <Button onClick={handleAddClick} disabled={!clientId} data-testid="button-add-department">
                 <Plus className="w-4 h-4 mr-2" />
                 Add Department
               </Button>
