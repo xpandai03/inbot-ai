@@ -73,15 +73,83 @@ export function isEndOfCallReport(payload: unknown): payload is VapiWebhookPaylo
   return msg.type === "end-of-call-report";
 }
 
+// ============================================================
+// TRANSCRIPT PRE-PROCESSING (Phase 2 Remediation - Fix 4)
+// ============================================================
+// Removes speech artifacts that break regex extraction patterns
+// Applied to transcript BEFORE extraction, not stored in database
+// ============================================================
+
+/**
+ * Clean transcript text for better extraction accuracy
+ * Removes hesitation markers, filler words, and speech artifacts
+ *
+ * Examples:
+ *   "uh one two three four Main Street" → "one two three four Main Street"
+ *   "I... um... live at 123 Oak" → "I live at 123 Oak"
+ *   "my name is... uh... John" → "my name is John"
+ */
+export function cleanTranscriptForExtraction(text: string): string {
+  if (!text) return text;
+
+  let cleaned = text;
+
+  // Remove filler words at word boundaries (preserve in middle of words)
+  // \b ensures we don't match "thumb" when looking for "um"
+  cleaned = cleaned.replace(/\b(uh|um|er|ah|eh|hmm|hm|mm)\b/gi, " ");
+
+  // Remove ellipses (multiple dots) → single space
+  cleaned = cleaned.replace(/\.{2,}/g, " ");
+
+  // Remove stutters: "I-I" → "I", "the-the" → "the"
+  cleaned = cleaned.replace(/\b(\w+)-\1\b/gi, "$1");
+
+  // Remove repeated words: "I I live" → "I live", "the the street" → "the street"
+  cleaned = cleaned.replace(/\b(\w+)\s+\1\b/gi, "$1");
+
+  // Normalize multiple spaces → single space
+  cleaned = cleaned.replace(/\s{2,}/g, " ");
+
+  // Trim leading/trailing whitespace
+  cleaned = cleaned.trim();
+
+  // Only log if we actually changed something
+  if (cleaned !== text) {
+    console.log(`[clean-transcript] Cleaned: "${text.substring(0, 50)}..." → "${cleaned.substring(0, 50)}..."`);
+  }
+
+  return cleaned;
+}
+
+/**
+ * Clean VapiMessage array for extraction
+ * Returns new array with cleaned message content
+ */
+export function cleanMessagesForExtraction(messages: VapiMessage[]): VapiMessage[] {
+  return messages.map(msg => ({
+    ...msg,
+    message: cleanTranscriptForExtraction(msg.message),
+  }));
+}
+
 // Words to ignore when extracting bare names
 const IGNORE_WORDS = new Set([
+  // Greetings and fillers
   "hello", "hi", "hey", "yeah", "yes", "no", "okay", "ok", "um", "uh",
   "well", "so", "like", "just", "actually", "basically", "please", "thanks",
   "thank", "you", "the", "a", "an", "is", "are", "was", "were", "be",
   "have", "has", "had", "do", "does", "did", "will", "would", "could",
   "should", "may", "might", "must", "can", "need", "want", "got", "get",
   "there", "here", "this", "that", "it", "i", "my", "me", "we", "our",
-  "nothing", "something", "anything", "everything", "none", "all"
+  "nothing", "something", "anything", "everything", "none", "all",
+  // VERB PHRASES that commonly follow "I'm" (Fix 1: prevents "calling because" as name)
+  "calling", "reporting", "looking", "trying", "asking", "wondering",
+  "hoping", "needing", "having", "following", "checking", "inquiring",
+  "phoning", "contacting", "reaching", "going", "getting", "making",
+  "seeing", "letting", "telling", "saying", "speaking", "talking",
+  // Common non-name words that slip through
+  "still", "also", "very", "really", "currently", "probably", "definitely",
+  "concerned", "worried", "frustrated", "happy", "glad", "sorry",
 ]);
 
 /**
@@ -92,6 +160,151 @@ function isValidNameWord(word: string): boolean {
   if (IGNORE_WORDS.has(word.toLowerCase())) return false;
   // Must start with a letter and contain only letters/hyphens
   return /^[A-Za-z][A-Za-z'-]*$/.test(word);
+}
+
+// ============================================================
+// POST-EXTRACTION VALIDATION (Phase 1 Remediation)
+// ============================================================
+// Safety net that catches garbage values AFTER regex extraction
+// Does NOT block record creation - converts bad values to defaults
+// ============================================================
+
+// Patterns that indicate a verb phrase, not a name
+const VERB_PHRASE_PATTERNS = [
+  /^calling\b/i,
+  /^reporting\b/i,
+  /^looking\b/i,
+  /^trying\b/i,
+  /^asking\b/i,
+  /^wondering\b/i,
+  /^hoping\b/i,
+  /^checking\b/i,
+  /^inquiring\b/i,
+  /^following\b/i,
+  /^reaching\b/i,
+  /^contacting\b/i,
+  /^phoning\b/i,
+  /^going\b/i,
+  /^getting\b/i,
+  /^making\b/i,
+  /^having\b/i,
+  /^needing\b/i,
+];
+
+// Common phrase patterns that are definitely not names
+const NON_NAME_PHRASE_PATTERNS = [
+  /^calling\s+(about|because|on|to|for|regarding|in|from)/i,
+  /^calling\s+on\s+reference/i,
+  /^calling\s+on\s+behalf/i,
+  /^calling\s+to\s+(report|ask|check|follow|inquire)/i,
+  /^the\s+(pothole|issue|problem|street|road|light)/i,
+  /^my\s+(street|road|address|house|property)/i,
+  /^this\s+(is|issue|problem)/i,
+  /^just\s+(calling|wanted|checking)/i,
+  /^still\s+(having|waiting|here)/i,
+];
+
+/**
+ * Validate extracted name - catches garbage that regex missed
+ * Returns null if name is invalid (caller should use default)
+ *
+ * Validation rules:
+ * - Reject verb phrases (calling, reporting, looking, etc.)
+ * - Reject common non-name phrases
+ * - Reject names < 2 chars or > 50 chars
+ * - Reject numeric-only values
+ * - Reject single common words
+ */
+export function validateExtractedName(name: string): string | null {
+  if (!name || name.trim().length === 0) return null;
+
+  const trimmed = name.trim();
+
+  // Length check
+  if (trimmed.length < 2 || trimmed.length > 50) {
+    console.log(`[validate-name] REJECTED (length): "${trimmed}"`);
+    return null;
+  }
+
+  // Numeric-only check
+  if (/^\d+$/.test(trimmed)) {
+    console.log(`[validate-name] REJECTED (numeric): "${trimmed}"`);
+    return null;
+  }
+
+  // Verb phrase check (starts with verb)
+  for (const pattern of VERB_PHRASE_PATTERNS) {
+    if (pattern.test(trimmed)) {
+      console.log(`[validate-name] REJECTED (verb phrase): "${trimmed}"`);
+      return null;
+    }
+  }
+
+  // Non-name phrase check
+  for (const pattern of NON_NAME_PHRASE_PATTERNS) {
+    if (pattern.test(trimmed)) {
+      console.log(`[validate-name] REJECTED (non-name phrase): "${trimmed}"`);
+      return null;
+    }
+  }
+
+  // Single-word blocklist check (for words that slipped through IGNORE_WORDS)
+  const words = trimmed.toLowerCase().split(/\s+/);
+  if (words.length === 1 && IGNORE_WORDS.has(words[0])) {
+    console.log(`[validate-name] REJECTED (single ignored word): "${trimmed}"`);
+    return null;
+  }
+
+  // All checks passed
+  console.log(`[validate-name] ACCEPTED: "${trimmed}"`);
+  return trimmed;
+}
+
+// Patterns that indicate non-address values
+const NON_ADDRESS_PATTERNS = [
+  /^not\s*sure/i,
+  /^don'?t\s*know/i,
+  /^somewhere/i,
+  /^around\s*here/i,
+  /^near\s*(the|my)/i,
+  /^by\s*the/i,
+  /^behind\s*(the|a)/i,
+  /^in\s*front\s*of/i,
+  /^across\s*from/i,
+  /^next\s*to/i,
+];
+
+/**
+ * Validate extracted address - catches garbage that regex missed
+ * Returns null if address is invalid (caller should use default)
+ *
+ * Validation rules:
+ * - Reject vague location descriptions
+ * - Reject addresses < 5 chars
+ * - Reject values that are clearly not street addresses
+ */
+export function validateExtractedAddress(address: string): string | null {
+  if (!address || address.trim().length === 0) return null;
+
+  const trimmed = address.trim();
+
+  // Length check (minimum reasonable address: "1 A St" = 6 chars)
+  if (trimmed.length < 5) {
+    console.log(`[validate-address] REJECTED (too short): "${trimmed}"`);
+    return null;
+  }
+
+  // Non-address pattern check
+  for (const pattern of NON_ADDRESS_PATTERNS) {
+    if (pattern.test(trimmed)) {
+      console.log(`[validate-address] REJECTED (non-address): "${trimmed}"`);
+      return null;
+    }
+  }
+
+  // All checks passed
+  console.log(`[validate-address] ACCEPTED: "${trimmed}"`);
+  return trimmed;
 }
 
 /**
@@ -150,6 +363,8 @@ function extractNameFromText(text: string): { name: string | null; pattern: stri
  * Extract caller name from transcript (two-pass)
  * Pass A: artifact.messages (structured)
  * Pass B: transcript string (fallback)
+ *
+ * Applies post-extraction validation to catch garbage values
  */
 export function extractName(messages: VapiMessage[], transcript?: string): { name: string; source: string } {
   // Pass A: Try artifact.messages
@@ -157,7 +372,13 @@ export function extractName(messages: VapiMessage[], transcript?: string): { nam
   for (const msg of userMessages) {
     const result = extractNameFromText(msg.message);
     if (result.name) {
-      return { name: result.name, source: `messages/${result.pattern}` };
+      // Validate before returning - reject garbage values
+      const validated = validateExtractedName(result.name);
+      if (validated) {
+        return { name: validated, source: `messages/${result.pattern}` };
+      }
+      // Validation failed - continue searching
+      console.log(`[extractName] Regex matched "${result.name}" but validation rejected it`);
     }
   }
 
@@ -165,7 +386,13 @@ export function extractName(messages: VapiMessage[], transcript?: string): { nam
   if (transcript) {
     const result = extractNameFromText(transcript);
     if (result.name) {
-      return { name: result.name, source: `transcript/${result.pattern}` };
+      // Validate before returning - reject garbage values
+      const validated = validateExtractedName(result.name);
+      if (validated) {
+        return { name: validated, source: `transcript/${result.pattern}` };
+      }
+      // Validation failed - fall through to default
+      console.log(`[extractName] Regex matched "${result.name}" but validation rejected it`);
     }
   }
 
@@ -439,6 +666,25 @@ function extractAddressFromText(text: string): { address: string | null; pattern
     }
   }
 
+  // Pattern 5: Number + capitalized word(s) WITHOUT street type (Fix 2 - lowest priority)
+  // Matches: "1234 Maple", "5678 Oak Ridge", "123 North Main"
+  // Does NOT match: "1234" alone, "1234 the", "1234 a", articles, prepositions
+  const ARTICLES_PREPS = new Set(["the", "a", "an", "at", "on", "in", "to", "for", "of", "and", "or", "but", "is", "it"]);
+  const noStreetTypePattern = /(\d{1,6})\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})\b/;
+  const noTypeMatch = text.match(noStreetTypePattern);
+  if (noTypeMatch && noTypeMatch[1] && noTypeMatch[2]) {
+    const streetNumber = noTypeMatch[1];
+    const streetName = noTypeMatch[2].trim();
+    const firstWord = streetName.split(/\s+/)[0].toLowerCase();
+
+    // Reject if first word is an article/preposition
+    if (!ARTICLES_PREPS.has(firstWord)) {
+      const candidate = `${streetNumber} ${streetName}`;
+      console.log(`[extractAddress] Pattern 5 (no-street-type) matched: "${candidate}"`);
+      return { address: candidate, pattern: "no-street-type" };
+    }
+  }
+
   return { address: null, pattern: "no match" };
 }
 
@@ -447,7 +693,7 @@ function extractAddressFromText(text: string): { address: string | null; pattern
  * Pass A: artifact.messages (structured)
  * Pass B: transcript string (fallback)
  *
- * Applies spoken number normalization before returning:
+ * Applies spoken number normalization and validation before returning:
  *   "Eleven twenty two Main Street" → "1122 Main Street"
  */
 export function extractAddress(messages: VapiMessage[], transcript?: string): { address: string; source: string } {
@@ -458,7 +704,13 @@ export function extractAddress(messages: VapiMessage[], transcript?: string): { 
     if (result.address) {
       // Normalize spoken numbers → digits
       const normalized = normalizeSpokenAddress(result.address);
-      return { address: normalized, source: `messages/${result.pattern}` };
+      // Validate before returning - reject garbage values
+      const validated = validateExtractedAddress(normalized);
+      if (validated) {
+        return { address: validated, source: `messages/${result.pattern}` };
+      }
+      // Validation failed - continue searching
+      console.log(`[extractAddress] Regex matched "${result.address}" but validation rejected it`);
     }
   }
 
@@ -468,7 +720,13 @@ export function extractAddress(messages: VapiMessage[], transcript?: string): { 
     if (result.address) {
       // Normalize spoken numbers → digits
       const normalized = normalizeSpokenAddress(result.address);
-      return { address: normalized, source: `transcript/${result.pattern}` };
+      // Validate before returning - reject garbage values
+      const validated = validateExtractedAddress(normalized);
+      if (validated) {
+        return { address: validated, source: `transcript/${result.pattern}` };
+      }
+      // Validation failed - fall through to default
+      console.log(`[extractAddress] Regex matched "${result.address}" but validation rejected it`);
     }
   }
 
@@ -539,29 +797,34 @@ export function extractPhoneNumber(payload: VapiWebhookPayload): string {
  */
 export function transformVapiToIntakeRecord(payload: VapiWebhookPayload): PartialIntakeRecord & { rawText: string } {
   const msg = payload.message;
-  const messages = msg.artifact?.messages || [];
-  const transcript = msg.transcript || "";
+  const rawMessages = msg.artifact?.messages || [];
+  const rawTranscript = msg.transcript || "";
 
   console.log("[vapi-transform] ====== EXTRACTION START ======");
-  console.log("[vapi-transform] artifact.messages count:", messages.length);
-  console.log("[vapi-transform] transcript length:", transcript.length);
-  console.log("[vapi-transform] transcript preview:", transcript.substring(0, 200));
+  console.log("[vapi-transform] artifact.messages count:", rawMessages.length);
+  console.log("[vapi-transform] transcript length:", rawTranscript.length);
+  console.log("[vapi-transform] transcript preview:", rawTranscript.substring(0, 200));
 
-  // Extract name with two-pass strategy
+  // Clean messages and transcript for better extraction (Fix 4)
+  const messages = cleanMessagesForExtraction(rawMessages);
+  const transcript = cleanTranscriptForExtraction(rawTranscript);
+
+  // Extract name with two-pass strategy (uses cleaned input)
   const nameResult = extractName(messages, transcript);
   console.log("[vapi-transform] NAME extracted:", nameResult.name, "| source:", nameResult.source);
 
-  // Extract address with two-pass strategy
+  // Extract address with two-pass strategy (uses cleaned input)
   const addressResult = extractAddress(messages, transcript);
   console.log("[vapi-transform] ADDRESS extracted:", addressResult.address, "| source:", addressResult.source);
 
-  // Detect language
-  const language = detectLanguage(messages);
+  // Detect language (uses RAW messages - LLM handles filler words fine)
+  const language = detectLanguage(rawMessages);
 
-  // Build raw text from multiple sources (fallback chain)
-  let rawIssueText = buildRawIssueText(messages);
+  // Build raw text from multiple sources (uses RAW - for LLM classification)
+  // We want original text for classification, not cleaned text
+  let rawIssueText = buildRawIssueText(rawMessages);
   if (!rawIssueText || rawIssueText === "No issue description provided") {
-    rawIssueText = transcript;
+    rawIssueText = rawTranscript;
   }
   if (!rawIssueText && msg.analysis?.summary) {
     rawIssueText = msg.analysis.summary;
