@@ -41,10 +41,14 @@ export interface EmailSendResult {
 function formatEmailContent(record: IntakeRecord): { subject: string; html: string; text: string } {
   const subject = `[${record.department}] New Intake: ${record.name}`;
 
+  // Format timestamp in Eastern Time (America/New_York) for municipal staff
   const timestamp = new Date(record.timestamp).toLocaleString("en-US", {
+    timeZone: "America/New_York",
     dateStyle: "medium",
     timeStyle: "short",
-  });
+  }) + " ET";
+
+  console.log(`[email] Timestamp raw: ${record.timestamp}, formatted ET: ${timestamp}`);
 
   const html = `
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
