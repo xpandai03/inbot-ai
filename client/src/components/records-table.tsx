@@ -9,7 +9,6 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Phone, MessageSquare } from "lucide-react";
 import type { IntakeRecord } from "@shared/schema";
-import { format, parseISO } from "date-fns";
 
 interface RecordsTableProps {
   records: IntakeRecord[];
@@ -48,7 +47,15 @@ export function RecordsTable({ records, showCost = false, isLoading = false }: R
 
   const formatTimestamp = (timestamp: string) => {
     try {
-      return format(parseISO(timestamp), "M/d h:mm a");
+      // Force Eastern Time for consistency with email notifications
+      return new Date(timestamp).toLocaleString("en-US", {
+        timeZone: "America/New_York",
+        month: "numeric",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+        hour12: true,
+      });
     } catch {
       return timestamp;
     }
