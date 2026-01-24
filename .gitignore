@@ -8,3 +8,7 @@ vite.config.ts.*
 .local/
 .env
 .env.local
+
+# Build logs (may contain sensitive info)
+*MasterBuildLogs.md
+vapi-webhook-error.md

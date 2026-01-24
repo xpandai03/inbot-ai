@@ -166,7 +166,7 @@ export default function Dashboard() {
             <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
               <Shield className="w-4 h-4 text-primary" />
             </div>
-            <span className="font-semibold text-foreground">VAPI Intake</span>
+            <span className="font-semibold text-foreground">Inbot AI</span>
           </div>
 
           <div className="flex items-center gap-3">
