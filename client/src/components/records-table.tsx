@@ -60,26 +60,26 @@ export function RecordsTable({ records, showCost = false, isLoading = false }: R
     return `${mins}:${secs.toString().padStart(2, "0")}`;
   };
 
-  // Common header class for consistency
-  const headerClass = "text-[10px] font-semibold uppercase tracking-wider text-muted-foreground px-2 py-2 whitespace-nowrap";
+  // Common classes
+  const headerBase = "text-[10px] font-semibold uppercase tracking-wider text-muted-foreground px-2 py-2 whitespace-nowrap";
   const cellClass = "px-2 py-2";
 
   return (
-    <div className="rounded-lg border border-card-border bg-card/50 overflow-hidden">
-      <Table className="text-sm">
+    <div className="rounded-lg border border-card-border bg-card/50 overflow-hidden overflow-x-auto">
+      <Table className="text-sm w-full table-fixed">
         <TableHeader>
           <TableRow className="hover:bg-transparent border-b border-card-border">
-            <TableHead className={headerClass}>Name</TableHead>
-            <TableHead className={headerClass}>Phone</TableHead>
-            <TableHead className={headerClass}>Address</TableHead>
-            <TableHead className={headerClass}>Intent</TableHead>
-            <TableHead className={headerClass}>Dept</TableHead>
-            <TableHead className={`${headerClass} text-center`} title="Channel">Ch</TableHead>
-            <TableHead className={`${headerClass} text-right`}>Dur</TableHead>
+            <TableHead className={`${headerBase} w-[100px]`}>Name</TableHead>
+            <TableHead className={`${headerBase} w-[95px]`}>Phone</TableHead>
+            <TableHead className={`${headerBase} w-[130px]`}>Address</TableHead>
+            <TableHead className={`${headerBase} w-[120px]`}>Intent</TableHead>
+            <TableHead className={`${headerBase} w-[85px]`}>Dept</TableHead>
+            <TableHead className={`${headerBase} w-[32px] text-center`} title="Channel">Ch</TableHead>
+            <TableHead className={`${headerBase} w-[40px] text-right`}>Dur</TableHead>
             {showCost && (
-              <TableHead className={`${headerClass} text-right`}>Cost</TableHead>
+              <TableHead className={`${headerBase} w-[50px] text-right`}>Cost</TableHead>
             )}
-            <TableHead className={headerClass}>Time</TableHead>
+            <TableHead className={`${headerBase} w-[80px]`}>Time</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -89,27 +89,27 @@ export function RecordsTable({ records, showCost = false, isLoading = false }: R
               className="border-b border-card-border/50 last:border-0 hover:bg-muted/30"
               data-testid={`row-record-${record.id}`}
             >
-              <TableCell className={`${cellClass} font-medium text-foreground max-w-[120px] truncate`}>
+              <TableCell className={`${cellClass} font-medium text-foreground truncate`} title={record.name}>
                 {record.name}
               </TableCell>
-              <TableCell className={`${cellClass} text-xs text-muted-foreground tabular-nums`}>
+              <TableCell className={`${cellClass} text-xs text-muted-foreground tabular-nums truncate`}>
                 {record.phone || (record.channel === "Voice" ? "(Web)" : "-")}
               </TableCell>
-              <TableCell className={`${cellClass} text-xs text-muted-foreground max-w-[140px] truncate`} title={record.address}>
+              <TableCell className={`${cellClass} text-xs text-muted-foreground truncate`} title={record.address}>
                 {record.address}
               </TableCell>
-              <TableCell className={cellClass}>
+              <TableCell className={`${cellClass} truncate`}>
                 {record.intent === "Pending" ? (
                   <Badge variant="outline" className="text-[10px] px-1.5 py-0 font-normal animate-pulse border-yellow-500/50 text-yellow-600">
                     ...
                   </Badge>
                 ) : (
-                  <Badge variant="secondary" className="text-[10px] px-1.5 py-0 font-normal whitespace-nowrap">
+                  <Badge variant="secondary" className="text-[10px] px-1.5 py-0 font-normal">
                     {record.intent}
                   </Badge>
                 )}
               </TableCell>
-              <TableCell className={`${cellClass} text-xs text-foreground max-w-[100px] truncate`} title={record.department}>
+              <TableCell className={`${cellClass} text-xs text-foreground truncate`} title={record.department}>
                 {record.department === "Pending" ? (
                   <span className="text-muted-foreground italic">...</span>
                 ) : (
