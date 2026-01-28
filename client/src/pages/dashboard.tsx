@@ -351,7 +351,7 @@ export default function Dashboard() {
 
         <RecordsTable
           records={filteredRecords}
-          showCost={isSuperAdmin}
+          showCost={true}
           isLoading={isLoading}
         />
 
