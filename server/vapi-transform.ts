@@ -147,9 +147,15 @@ const IGNORE_WORDS = new Set([
   "hoping", "needing", "having", "following", "checking", "inquiring",
   "phoning", "contacting", "reaching", "going", "getting", "making",
   "seeing", "letting", "telling", "saying", "speaking", "talking",
+  "texting", "emailing", "waiting", "writing",
   // Common non-name words that slip through
   "still", "also", "very", "really", "currently", "probably", "definitely",
   "concerned", "worried", "frustrated", "happy", "glad", "sorry",
+  // Common nouns/prepositions that are NOT names
+  "about", "soda", "snow", "water", "phone", "help", "issue", "problem",
+  "street", "road", "pothole", "light", "tree", "sign", "garbage", "trash",
+  "car", "house", "home", "work", "today", "tomorrow", "yesterday",
+  "morning", "afternoon", "evening", "night", "week", "month", "year",
 ]);
 
 /**
@@ -202,6 +208,17 @@ const NON_NAME_PHRASE_PATTERNS = [
   /^this\s+(is|issue|problem)/i,
   /^just\s+(calling|wanted|checking)/i,
   /^still\s+(having|waiting|here)/i,
+  // Additional phrases that slip through as names
+  /^texting\s+(about|you|to|for)/i,
+  /^texting$/i,
+  /^to\s+(help|report|ask|call|check)/i,
+  /^about\s+(a|the|my|this|that)/i,
+  /^about$/i,
+  /^soda$/i,
+  /^snow$/i,
+  /^help$/i,
+  /^here\s+(to|about|for)/i,
+  /^\w+ing\s+about\s+\w+/i,  // Catches "texting about snow", "calling about issue", etc.
 ];
 
 /**
@@ -253,6 +270,44 @@ export function validateExtractedName(name: string): string | null {
   if (words.length === 1 && IGNORE_WORDS.has(words[0])) {
     console.log(`[validate-name] REJECTED (single ignored word): "${trimmed}"`);
     return null;
+  }
+
+  // Single-word check: reject if it's a common English word that's unlikely to be a name
+  // This catches transcription errors like "soda", "snow", "about", etc.
+  const COMMON_NON_NAME_WORDS = new Set([
+    // Common nouns
+    "soda", "snow", "water", "phone", "help", "issue", "problem", "street",
+    "road", "pothole", "light", "tree", "sign", "garbage", "trash", "car",
+    "house", "home", "work", "today", "tomorrow", "morning", "afternoon",
+    "evening", "night", "week", "month", "year", "time", "day", "place",
+    "thing", "stuff", "matter", "question", "answer", "note", "message",
+    // Prepositions/conjunctions/adverbs
+    "about", "from", "with", "into", "onto", "over", "under", "before",
+    "after", "during", "through", "between", "among", "against", "within",
+    // Common verbs (base form)
+    "help", "call", "text", "send", "fix", "check", "look", "find", "tell",
+    // Food/drink items (often misheard)
+    "soda", "coffee", "tea", "water", "food", "pizza", "burger",
+    // Weather words
+    "snow", "rain", "wind", "cold", "hot", "warm", "sunny",
+    // Question words
+    "what", "where", "when", "why", "how", "who", "which",
+  ]);
+  
+  if (words.length === 1 && COMMON_NON_NAME_WORDS.has(words[0])) {
+    console.log(`[validate-name] REJECTED (common non-name word): "${trimmed}"`);
+    return null;
+  }
+
+  // Multi-word check: reject if ALL words are common non-name words
+  if (words.length > 1) {
+    const allCommon = words.every(w => 
+      IGNORE_WORDS.has(w) || COMMON_NON_NAME_WORDS.has(w)
+    );
+    if (allCommon) {
+      console.log(`[validate-name] REJECTED (all words are common): "${trimmed}"`);
+      return null;
+    }
   }
 
   // All checks passed
