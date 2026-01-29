@@ -679,8 +679,10 @@ const NON_ADDRESS_PATTERNS = [
   /^(?:s\s+)?a\s+(?:cable|wire|light|tree|branch|pole)/i,               // "s a cable" (truncated "there's a cable")
   /^(?:it'?s?\s+)?(?:a\s+)?(?:cable|wire|light|pole)/i,                // "it's a cable"
   
-  // Problem/issue language
-  /(?:pothole|hole|crack|damage|broken|leak|flood|fire|smoke|fallen)/i,
+  // Problem/issue language - only reject when these START the address (not in middle)
+  // This prevents rejecting valid addresses like "123 Broken Arrow Dr" while catching "broken pipe on Main St"
+  /^(?:pothole|crack|damage|broken|leak|flood|fire|smoke|fallen|snow|ice)/i,
+  /^(?:a|the)\s+(?:pothole|crack|damage|broken|leak|flood|fire|snow|ice)/i,
   
   // Starts with articles/pronouns without numbers (not addresses)
   /^(?:a|the|this|that|there|it)\s+(?![\d])/i,       // "a cable", "the light" (but not "a 123 Main St")
@@ -794,7 +796,17 @@ export function validateExtractedAddress(address: string): string | null {
     /\(approximate\)$/i,
   ];
   
-  // Check if the address starts with any valid pattern
+  // ============================================================
+  // PHASE 2 HARDENING: Also allow addresses that END with street types
+  // ============================================================
+  // Callers might just say "Oak Street" without a number
+  // This is valid - it's a partial address that's still useful
+  // Examples: "Main Street", "Oak Avenue", "Fifth Avenue"
+  // ============================================================
+  const STREET_TYPES_PATTERN = new RegExp(`(${STREET_TYPES})$`, "i");
+  const endsWithStreetType = STREET_TYPES_PATTERN.test(cleaned);
+  
+  // Check if the address starts with any valid pattern OR ends with a street type
   const hasValidStart = VALID_ADDRESS_STARTERS.some(pattern => {
     if (pattern.source.endsWith('$')) {
       // Pattern checks entire string (like approximate)
@@ -803,9 +815,13 @@ export function validateExtractedAddress(address: string): string | null {
     return pattern.test(firstWord) || pattern.test(cleaned);
   });
   
-  if (!hasValidStart) {
-    console.log(`[validate-address] REJECTED (doesn't start with number/valid prefix): "${cleaned}"`);
+  if (!hasValidStart && !endsWithStreetType) {
+    console.log(`[validate-address] REJECTED (doesn't start with number/valid prefix AND doesn't end with street type): "${cleaned}"`);
     return null;
+  }
+  
+  if (!hasValidStart && endsWithStreetType) {
+    console.log(`[validate-address] ACCEPTED (no number but ends with street type): "${cleaned}"`);
   }
 
   // All checks passed
@@ -1708,6 +1724,7 @@ function extractAddressFromText(text: string): { address: string | null; pattern
   );
   const numericMatch = text.match(numericPattern);
   if (numericMatch && numericMatch[1]) {
+    console.log(`[extractAddressFromText] Pattern 1 (numeric) MATCHED: "${numericMatch[1]}"`);
     return { address: numericMatch[1].replace(/[.,!?]$/, "").trim(), pattern: "numeric" };
   }
 
@@ -1718,6 +1735,7 @@ function extractAddressFromText(text: string): { address: string | null; pattern
   );
   const spokenMatch = text.match(spokenPattern);
   if (spokenMatch && spokenMatch[1]) {
+    console.log(`[extractAddressFromText] Pattern 2 (spoken) MATCHED: "${spokenMatch[1]}"`);
     // Store the spoken address as-is (no conversion needed for now)
     return { address: spokenMatch[1].replace(/[.,!?]$/, "").trim(), pattern: "spoken" };
   }
@@ -1745,6 +1763,18 @@ function extractAddressFromText(text: string): { address: string | null; pattern
     }
   }
 
+  // Pattern 3b: "on/at [Street Name]" - captures addresses mentioned with prepositions
+  // Examples: "snow on Oak Street", "pothole at Main Avenue", "blocked on Fifth Street"
+  const onAtPattern = new RegExp(
+    `(?:on|at)\\s+([A-Z][a-z]+(?:\\s+[A-Z][a-z]+)?\\s+(?:${STREET_TYPES}))`,
+    "i"
+  );
+  const onAtMatch = text.match(onAtPattern);
+  if (onAtMatch && onAtMatch[1]) {
+    console.log(`[extractAddressFromText] Pattern 3b (on/at + street) MATCHED: "${onAtMatch[1]}"`);
+    return { address: onAtMatch[1].replace(/[.,!?]$/, "").trim(), pattern: "on-at-street" };
+  }
+
   // Pattern 4: Any text ending in a street type (less confident)
   // Supports accented characters for Spanish street names
   // Phase 2 Hardening: Added question phrase rejection
@@ -1768,9 +1798,10 @@ function extractAddressFromText(text: string): { address: string | null; pattern
       ]);
       const firstWord = candidate.split(/\s+/)[0].toLowerCase();
       if (QUESTION_STARTERS.has(firstWord)) {
-        console.log(`[extractAddress] Pattern 4 REJECTED (question phrase): "${candidate}"`);
+        console.log(`[extractAddressFromText] Pattern 4 REJECTED (question phrase): "${candidate}"`);
         // Don't return - continue to other patterns
       } else {
+        console.log(`[extractAddressFromText] Pattern 4 (any-street) MATCHED: "${candidate}"`);
         return { address: candidate, pattern: "any-street" };
       }
     }
@@ -1866,39 +1897,62 @@ function extractAddressFromText(text: string): { address: string | null; pattern
  *   "Eleven twenty two Main Street" → "1122 Main Street"
  */
 export function extractAddress(messages: VapiMessage[], transcript?: string): { address: string; source: string } {
+  console.log("[extractAddress] ====== ADDRESS EXTRACTION START ======");
+  
   // Pass A: Try artifact.messages
   const userMessages = messages.filter(m => m.role === "user");
-  for (const msg of userMessages) {
+  console.log(`[extractAddress] Processing ${userMessages.length} user messages`);
+  
+  for (let i = 0; i < userMessages.length; i++) {
+    const msg = userMessages[i];
+    const preview = msg.message.substring(0, 150);
+    console.log(`[extractAddress] msg[${i}]: "${preview}${msg.message.length > 150 ? '...' : ''}"`);
+    
     const result = extractAddressFromText(msg.message);
+    console.log(`[extractAddress] → Pattern result: ${result.pattern}, address: ${result.address ? `"${result.address}"` : 'null'}`);
+    
     if (result.address) {
       // Normalize spoken numbers → digits
       const normalized = normalizeSpokenAddress(result.address);
+      console.log(`[extractAddress] → Normalized: "${normalized}"`);
       // Validate before returning - reject garbage values
       const validated = validateExtractedAddress(normalized);
       if (validated) {
+        console.log(`[extractAddress] ====== FOUND ADDRESS: "${validated}" (source: messages/${result.pattern}) ======`);
         return { address: validated, source: `messages/${result.pattern}` };
       }
       // Validation failed - continue searching
-      console.log(`[extractAddress] Regex matched "${result.address}" but validation rejected it`);
+      console.log(`[extractAddress] → Validation REJECTED normalized address`);
     }
   }
+  console.log("[extractAddress] No valid address found in messages, trying transcript...");
 
   // Pass B: Try transcript string
   if (transcript) {
+    const transcriptPreview = transcript.substring(0, 300);
+    console.log(`[extractAddress] Transcript preview: "${transcriptPreview}${transcript.length > 300 ? '...' : ''}"`);
+    
     const result = extractAddressFromText(transcript);
+    console.log(`[extractAddress] → Transcript pattern result: ${result.pattern}, address: ${result.address ? `"${result.address}"` : 'null'}`);
+    
     if (result.address) {
       // Normalize spoken numbers → digits
       const normalized = normalizeSpokenAddress(result.address);
+      console.log(`[extractAddress] → Normalized: "${normalized}"`);
       // Validate before returning - reject garbage values
       const validated = validateExtractedAddress(normalized);
       if (validated) {
+        console.log(`[extractAddress] ====== FOUND ADDRESS: "${validated}" (source: transcript/${result.pattern}) ======`);
         return { address: validated, source: `transcript/${result.pattern}` };
       }
       // Validation failed - fall through to default
-      console.log(`[extractAddress] Regex matched "${result.address}" but validation rejected it`);
+      console.log(`[extractAddress] → Validation REJECTED normalized address`);
     }
+  } else {
+    console.log("[extractAddress] No transcript provided");
   }
 
+  console.log("[extractAddress] ====== NO ADDRESS FOUND - returning 'Not provided' ======");
   return { address: "Not provided", source: "default" };
 }
 
