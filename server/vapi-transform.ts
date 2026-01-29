@@ -695,12 +695,20 @@ interface NameCandidate {
 // Base scores for different pattern types (higher = more confident)
 // Phase 1 Final Hardening: DRAMATICALLY increased separation
 // Explicit triggers should MASSIVELY outweigh weak patterns
+// Phase 2 Hardening: Added casual introduction patterns for natural speech
 const PATTERN_BASE_SCORES: Record<string, number> = {
   // Explicit name triggers (VERY HIGH confidence - should always win)
   "my name is": 500,   // Increased from 100 - definitive name statement
   "mi nombre es": 500, // Spanish equivalent - same confidence
   "me llamo": 480,     // Increased from 95 - strong Spanish name trigger
   "name is": 450,      // Increased from 90
+  // Casual introductions (HIGH confidence - common in real calls)
+  // Phase 2 Hardening: Added for "Hi, Jose Martinez calling to report..."
+  "casual intro": 380,     // "Hi, Jose Martinez calling" - high confidence
+  "greeting intro": 360,   // "Hi, Jose Martinez, I'm calling" - high confidence
+  "name first": 340,       // "Jose Martinez calling" at sentence start - medium-high
+  "yes intro": 320,        // "Yes, Jose Martinez here" - medium-high
+  "speaking intro": 300,   // "Speaking, this is Jose Martinez" - medium-high
   // Self-identification (high confidence)
   "this is": 300,      // Increased from 80 - clear self-identification
   "habla": 280,        // Spanish "speaking is..."
@@ -735,6 +743,34 @@ function extractAllNameCandidates(text: string, messageIndex: number): NameCandi
     { regex: new RegExp(`(?:mi nombre es)\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "gi"), pattern: "mi nombre es" },
     { regex: new RegExp(`(?:soy)\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "gi"), pattern: "soy" },
     { regex: new RegExp(`(?:le\\s+)?habla\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "gi"), pattern: "habla" },
+    
+    // ============================================================
+    // Phase 2 Hardening: CASUAL INTRODUCTION PATTERNS
+    // ============================================================
+    // These capture natural phone call intros like:
+    // "Hi, Jose Martinez calling to report..."
+    // "Yes, Maria Garcia here"
+    // "Jose Martinez, I'm calling about..."
+    // ============================================================
+    
+    // "Hi/Hello/Hey, [Name] calling/here/speaking" - very common in real calls
+    { regex: new RegExp(`(?:hi|hello|hey),?\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){1,2})\\s+(?:calling|here|speaking)`, "gi"), pattern: "casual intro" },
+    
+    // "Hi/Hello, [Name], I'm calling..." - greeting then name then action
+    { regex: new RegExp(`(?:hi|hello|hey),?\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){1,2}),?\\s+(?:i'm|i am)\\s+calling`, "gi"), pattern: "greeting intro" },
+    
+    // "[Name] calling/here/speaking" at start of message (no greeting)
+    { regex: new RegExp(`^(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){1,2})\\s+(?:calling|here|speaking)`, "gi"), pattern: "name first" },
+    
+    // "Yes/Yeah, [Name] here/calling" - confirming identity
+    { regex: new RegExp(`(?:yes|yeah|yep),?\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){1,2})\\s+(?:here|calling|speaking)`, "gi"), pattern: "yes intro" },
+    
+    // "Speaking, this is [Name]" / "Yes, this is [Name]"
+    { regex: new RegExp(`(?:speaking|yes|yeah),?\\s+(?:this is|it's)\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "gi"), pattern: "speaking intro" },
+    
+    // Spanish casual: "Hola, [Name] llamando" / "Sí, [Name] aquí"
+    { regex: new RegExp(`(?:hola|bueno),?\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){1,2})\\s+(?:llamando|aqu[ií])`, "gi"), pattern: "casual intro" },
+    { regex: new RegExp(`(?:s[ií]),?\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){1,2})\\s+(?:aqu[ií]|llamando|hablando)`, "gi"), pattern: "yes intro" },
   ];
 
   for (const { regex, pattern } of explicitPatterns) {
@@ -1467,6 +1503,54 @@ function extractAddressFromText(text: string): { address: string | null; pattern
       const candidate = `${streetNumber} ${streetName}`;
       console.log(`[extractAddress] Pattern 5 (no-street-type) matched: "${candidate}"`);
       return { address: candidate, pattern: "no-street-type" };
+    }
+  }
+
+  // ============================================================
+  // Pattern 6: CONTEXTUAL LOCATION PATTERNS (Phase 2 Hardening)
+  // ============================================================
+  // These capture approximate/contextual locations when no specific address is given.
+  // Examples: "on my block", "in the parking lot", "corner of Oak and Main"
+  // Returns with "(Approximate)" suffix to indicate lower confidence.
+  // ============================================================
+  
+  // Cross-street / intersection patterns (most useful contextual info)
+  const crossStreetPatterns = [
+    // "corner of X and Y", "intersection of X and Y"
+    /(?:corner|intersection)\s+(?:of\s+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s+(?:and|&|y)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/i,
+    // "on X near Y", "on X between Y and Z"
+    /(?:on|at)\s+([A-Z][a-z]+(?:\s+(?:Street|St|Avenue|Ave|Road|Rd|Drive|Dr))?)\s+(?:near|between)\s+([A-Z][a-z]+)/i,
+    // Spanish: "esquina de X y Y"
+    /(?:esquina\s+de|cruce\s+de)\s+([\w]+)\s+(?:y|con)\s+([\w]+)/i,
+  ];
+  
+  for (const pattern of crossStreetPatterns) {
+    const match = text.match(pattern);
+    if (match && match[1] && match[2]) {
+      const location = `${match[1]} & ${match[2]} (Approximate)`;
+      console.log(`[extractAddress] Pattern 6a (cross-street) matched: "${location}"`);
+      return { address: location, pattern: "cross-street" };
+    }
+  }
+
+  // Contextual neighborhood/area patterns (lower confidence)
+  const contextualPatterns = [
+    // "on my block/street/road"
+    { pattern: /(?:on|in)\s+(?:my|the|our)\s+(block|street|road|neighborhood|area)/i, type: "relative" },
+    // "outside/in front of [building type]"
+    { pattern: /(?:outside|in\s+front\s+of|behind|near)\s+(?:my|the|a)\s+(house|building|apartment|store|school|church|park|library|hospital)/i, type: "building-ref" },
+    // "in the parking lot/alley/driveway"
+    { pattern: /(?:in|at)\s+(?:the|my|a)\s+(parking\s+lot|alley|driveway|garage|backyard|front\s+yard)/i, type: "area" },
+    // Spanish contextual
+    { pattern: /(?:en\s+mi|en\s+la|en\s+el)\s+(cuadra|calle|barrio|colonia|vecindario)/i, type: "relative-es" },
+  ];
+  
+  for (const { pattern, type } of contextualPatterns) {
+    const match = text.match(pattern);
+    if (match && match[1]) {
+      const location = `${match[1]} (Approximate)`;
+      console.log(`[extractAddress] Pattern 6b (${type}) matched: "${location}"`);
+      return { address: location, pattern: `contextual-${type}` };
     }
   }
 

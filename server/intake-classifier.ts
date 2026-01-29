@@ -43,6 +43,7 @@ export const INTENT_CATEGORIES = [
   "Water / Utilities",
   "Trash / Sanitation",
   "Billing / Payment",
+  "Safety Concern / Suspicious Activity",  // Phase 2: Added for crime/safety reports
   "General Inquiry",
 ] as const;
 
@@ -64,6 +65,7 @@ INTENT (choose exactly one):
 - Water / Utilities
 - Trash / Sanitation
 - Billing / Payment
+- Safety Concern / Suspicious Activity
 - General Inquiry
 
 DEPARTMENT (choose exactly one):
@@ -76,6 +78,8 @@ DEPARTMENT (choose exactly one):
 
 Respond with JSON only, no markdown: {"intent": "...", "department": "...", "summary": "..."}
 The summary should be 1 sentence describing the citizen's issue.
+
+Use "Safety Concern / Suspicious Activity" for crime reports, suspicious persons, break-ins, vandalism, trespassing, or safety hazards. Route these to "Public Safety".
 
 If the input is unclear or doesn't fit any category, use "General Inquiry" for intent and "General" for department.`;
 
@@ -245,6 +249,31 @@ const INTENT_PATTERNS: Array<{ pattern: RegExp; intent: string; priority: number
   { pattern: /cobro\s*(excesivo|incorrecto|alto)/i, intent: "Billing / Payment", priority: 85 },  // excessive/incorrect charge
   { pattern: /plan\s*(de\s*)?pago/i, intent: "Billing / Payment", priority: 85 },  // payment plan
   { pattern: /deuda|adeudo/i, intent: "Billing / Payment", priority: 80 },  // debt/amount owed
+
+  // SAFETY CONCERN / SUSPICIOUS ACTIVITY - Crime, safety hazards, suspicious persons
+  // Phase 2 Hardening: Added for public safety intake routing
+  // English - Crime/Break-in
+  { pattern: /break(ing)?\s*in(to)?/i, intent: "Safety Concern / Suspicious Activity", priority: 95 },
+  { pattern: /burglar(y)?|theft|stolen/i, intent: "Safety Concern / Suspicious Activity", priority: 95 },
+  { pattern: /car\s*(break|theft|stolen|burglar)/i, intent: "Safety Concern / Suspicious Activity", priority: 95 },
+  { pattern: /prowl(er|ing)/i, intent: "Safety Concern / Suspicious Activity", priority: 95 },
+  { pattern: /trespass(er|ing)?/i, intent: "Safety Concern / Suspicious Activity", priority: 90 },
+  { pattern: /vandal(ism|ize|izing)?/i, intent: "Safety Concern / Suspicious Activity", priority: 90 },
+  // English - Suspicious behavior
+  { pattern: /suspicious\s*(person|activity|vehicle|behavior|individual)/i, intent: "Safety Concern / Suspicious Activity", priority: 95 },
+  { pattern: /checking\s*(car|door|window|lock|handle)/i, intent: "Safety Concern / Suspicious Activity", priority: 90 },
+  { pattern: /trying\s*to\s*(open|break|get\s*into|enter)/i, intent: "Safety Concern / Suspicious Activity", priority: 90 },
+  { pattern: /someone\s*(walking|looking|hanging|lurking)\s*around/i, intent: "Safety Concern / Suspicious Activity", priority: 85 },
+  { pattern: /strange\s*(person|man|woman|individual)/i, intent: "Safety Concern / Suspicious Activity", priority: 85 },
+  { pattern: /looking\s*(in|into|through)\s*(car|window|door)/i, intent: "Safety Concern / Suspicious Activity", priority: 90 },
+  { pattern: /casing\s*(the|my)?\s*(house|car|neighborhood)/i, intent: "Safety Concern / Suspicious Activity", priority: 90 },
+  // Spanish - Crime/suspicious
+  { pattern: /sospechoso/i, intent: "Safety Concern / Suspicious Activity", priority: 95 },  // suspicious
+  { pattern: /robo|robando|ladr[oó]n/i, intent: "Safety Concern / Suspicious Activity", priority: 95 },  // robbery/thief
+  { pattern: /intruso/i, intent: "Safety Concern / Suspicious Activity", priority: 95 },  // intruder
+  { pattern: /entr(ar|ando)\s*(a\s*)?(la\s*)?(fuerza|robar)/i, intent: "Safety Concern / Suspicious Activity", priority: 90 },  // breaking in
+  { pattern: /persona\s*(extra[ñn]a|sospechosa)/i, intent: "Safety Concern / Suspicious Activity", priority: 85 },  // strange/suspicious person
+  { pattern: /revisando\s*(carros|puertas|ventanas)/i, intent: "Safety Concern / Suspicious Activity", priority: 90 },  // checking cars/doors/windows
 ];
 
 // Department patterns with context
@@ -407,6 +436,24 @@ const STRONG_INTENT_KEYWORDS: Array<{ keywords: RegExp[]; intent: string; depart
     keywords: [/(water|utility|trash)\s*bill/i, /factura/i, /payment\s*plan/i, /recibo/i],
     intent: "Billing / Payment",
     department: "Finance",
+  },
+  // Safety Concern / Suspicious Activity (Phase 2 Hardening)
+  {
+    keywords: [
+      /suspicious/i, 
+      /break\s*in/i, 
+      /prowler/i, 
+      /burglar/i,
+      /checking\s*(car|door|lock)/i,
+      /trying\s*to\s*(open|break|get\s*into)/i,
+      /someone\s*(walking|looking|hanging)\s*around/i,
+      /sospechoso/i,
+      /intruso/i,
+      /robo/i,
+      /ladr[oó]n/i,
+    ],
+    intent: "Safety Concern / Suspicious Activity",
+    department: "Public Safety",
   },
 ];
 
