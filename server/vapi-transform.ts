@@ -1718,14 +1718,24 @@ function extractAddressFromText(text: string): { address: string | null; pattern
   if (!text) return { address: null, pattern: "empty" };
 
   // Pattern 1: Numeric address "123 Main Street"
-  const numericPattern = new RegExp(
-    `(\\d{1,6}\\s+[A-Za-z][A-Za-z'-]*(?:\\s+[A-Za-z][A-Za-z'-]*){0,3}\\s+(?:${STREET_TYPES}))`,
-    "i"
-  );
-  const numericMatch = text.match(numericPattern);
-  if (numericMatch && numericMatch[1]) {
-    console.log(`[extractAddressFromText] Pattern 1 (numeric) MATCHED: "${numericMatch[1]}"`);
-    return { address: numericMatch[1].replace(/[.,!?]$/, "").trim(), pattern: "numeric" };
+  // Phase 2 Hardening: Multiple patterns for different address formats
+  const numericPatterns = [
+    // Standard: "123 Main Street", "456 Oak Avenue"
+    new RegExp(`(\\d{1,6}\\s+[A-Za-z][A-Za-z'-]*(?:\\s+[A-Za-z][A-Za-z'-]*){0,4}\\s+(?:${STREET_TYPES}))`, "i"),
+    // With directional: "123 North Main Street", "456 South Oak Avenue"
+    new RegExp(`(\\d{1,6}\\s+(?:North|South|East|West|N|S|E|W)\\.?\\s+[A-Za-z][A-Za-z'-]*(?:\\s+[A-Za-z][A-Za-z'-]*){0,3}\\s+(?:${STREET_TYPES}))`, "i"),
+    // Numbered street: "123 5th Avenue", "456 23rd Street"
+    new RegExp(`(\\d{1,6}\\s+\\d{1,3}(?:st|nd|rd|th)\\s+(?:${STREET_TYPES}))`, "i"),
+    // Complex multi-word: "123 Martin Luther King Jr Boulevard"
+    new RegExp(`(\\d{1,6}\\s+[A-Z][a-z]+(?:\\s+[A-Z][a-z]+){1,5}\\s+(?:${STREET_TYPES}))`, "i"),
+  ];
+  
+  for (const pattern of numericPatterns) {
+    const match = text.match(pattern);
+    if (match && match[1]) {
+      console.log(`[extractAddressFromText] Pattern 1 (numeric) MATCHED: "${match[1]}"`);
+      return { address: match[1].replace(/[.,!?]$/, "").trim(), pattern: "numeric" };
+    }
   }
 
   // Pattern 2: Spoken number address "fifty four eighty four Main Street"
@@ -1742,37 +1752,53 @@ function extractAddressFromText(text: string): { address: string | null; pattern
 
   // Pattern 3: "address is..." or "at..." followed by address-like text
   // Phase 1 Spanish Hardening: Added Spanish address prefix patterns
+  // Phase 2 Hardening: Expanded trigger phrases
   const prefixPatterns = [
-    // English prefixes with street number
-    /(?:address is|my address is|i(?:'m| am) at|i live at|located at)\s+(\d{1,6}\s+[\w\s]+(?:Street|St|Avenue|Ave|Drive|Dr|Road|Rd|Boulevard|Blvd|Lane|Ln|Way|Court|Ct|Place|Pl|Circle|Cir))/i,
-    // English prefixes without street number
-    /(?:address is|my address is|i(?:'m| am) at|i live at|located at)\s+([\w\s]+(?:Street|St|Avenue|Ave|Drive|Dr|Road|Rd|Boulevard|Blvd|Lane|Ln|Way|Court|Ct|Place|Pl|Circle|Cir))/i,
+    // NUMERIC ADDRESS WITH TRIGGER PHRASES
+    // "it's at 123 Main Street", "the address is 456 Oak Avenue"
+    /(?:it'?s\s+(?:at|on)|address\s+is|my\s+address\s+is|i(?:'m|\s+am)\s+at|i\s+live\s+at|located\s+at|it'?s\s+(?:at\s+)?)\s*(\d{1,6}\s+[\w\s'-]+(?:Street|St|Avenue|Ave|Drive|Dr|Road|Rd|Boulevard|Blvd|Lane|Ln|Way|Court|Ct|Place|Pl|Circle|Cir|Terrace|Ter|Parkway|Pkwy|Highway|Hwy))/i,
+    // "on 123 Oak Street", "at 456 Main Avenue"
+    /(?:^|\s)(?:on|at)\s+(\d{1,6}\s+[\w\s'-]+(?:Street|St|Avenue|Ave|Drive|Dr|Road|Rd|Boulevard|Blvd|Lane|Ln|Way|Court|Ct|Place|Pl|Circle|Cir))/i,
+    // English prefixes without street number (less common)
+    /(?:address\s+is|my\s+address\s+is|i(?:'m|\s+am)\s+at|i\s+live\s+at|located\s+at)\s+([\w\s'-]+(?:Street|St|Avenue|Ave|Drive|Dr|Road|Rd|Boulevard|Blvd|Lane|Ln|Way|Court|Ct|Place|Pl|Circle|Cir))/i,
     // Spanish prefixes: "vivo en la Calle 5 de Marzo 123" or "mi dirección es Avenida Central 456"
-    // Captures: Calle/Avenida + name + optional number
-    /(?:vivo en(?: la| el)?|mi direcci[oó]n es|estoy en(?: la| el)?|queda en(?: la| el)?)\s+((?:Calle|Avenida|Av|Pasaje|Camino|Carretera|Plaza|Callej[oó]n|Paseo|Bulevar)\s+[\w\s]+?\s*\d{1,6})/i,
+    /(?:vivo\s+en(?:\s+la|\s+el)?|mi\s+direcci[oó]n\s+es|estoy\s+en(?:\s+la|\s+el)?|queda\s+en(?:\s+la|\s+el)?)\s+((?:Calle|Avenida|Av|Pasaje|Camino|Carretera|Plaza|Callej[oó]n|Paseo|Bulevar)\s+[\w\s]+?\s*\d{1,6})/i,
     // Spanish: number first "vivo en el 123 de la Calle Main"
-    /(?:vivo en(?: la| el)?|mi direcci[oó]n es|estoy en(?: la| el)?)\s+(?:el\s+)?(\d{1,6}\s+(?:de\s+la\s+)?(?:Calle|Avenida|Av|Pasaje|Camino|Carretera|Plaza)\s+[\w\s]+)/i,
-    // Spanish: "en la calle Oak" without number (lower confidence)
-    /(?:en la|en el)\s+((?:Calle|Avenida|Av|Pasaje|Camino)\s+[\w\s]+)/i,
+    /(?:vivo\s+en(?:\s+la|\s+el)?|mi\s+direcci[oó]n\s+es|estoy\s+en(?:\s+la|\s+el)?)\s+(?:el\s+)?(\d{1,6}\s+(?:de\s+la\s+)?(?:Calle|Avenida|Av|Pasaje|Camino|Carretera|Plaza)\s+[\w\s]+)/i,
+    // Spanish: "en la calle Oak" without number
+    /(?:en\s+la|en\s+el)\s+((?:Calle|Avenida|Av|Pasaje|Camino)\s+[\w\s]+)/i,
   ];
 
   for (const pattern of prefixPatterns) {
     const match = text.match(pattern);
     if (match && match[1]) {
+      console.log(`[extractAddressFromText] Pattern 3 (prefix) MATCHED: "${match[1]}"`);
       return { address: match[1].replace(/[.,!?]$/, "").trim(), pattern: "prefix" };
     }
   }
 
   // Pattern 3b: "on/at [Street Name]" - captures addresses mentioned with prepositions
-  // Examples: "snow on Oak Street", "pothole at Main Avenue", "blocked on Fifth Street"
-  const onAtPattern = new RegExp(
-    `(?:on|at)\\s+([A-Z][a-z]+(?:\\s+[A-Z][a-z]+)?\\s+(?:${STREET_TYPES}))`,
-    "i"
-  );
-  const onAtMatch = text.match(onAtPattern);
-  if (onAtMatch && onAtMatch[1]) {
-    console.log(`[extractAddressFromText] Pattern 3b (on/at + street) MATCHED: "${onAtMatch[1]}"`);
-    return { address: onAtMatch[1].replace(/[.,!?]$/, "").trim(), pattern: "on-at-street" };
+  // Phase 2 Hardening: Expanded to handle complex multi-word street names
+  // Examples: "on Oak Street", "at Martin Luther King Boulevard", "on North Main Street"
+  const onAtPatterns = [
+    // With number: "on 123 Oak Street"
+    new RegExp(`(?:on|at)\\s+(\\d{1,6}\\s+[A-Za-z][A-Za-z\\s'-]+(?:${STREET_TYPES}))`, "i"),
+    // With directional: "on North Oak Street", "at East Main Avenue"
+    new RegExp(`(?:on|at)\\s+((?:North|South|East|West|N|S|E|W)\\.?\\s+[A-Za-z][A-Za-z\\s'-]+(?:${STREET_TYPES}))`, "i"),
+    // Multi-word street name: "on Martin Luther King Boulevard"
+    new RegExp(`(?:on|at)\\s+([A-Z][a-z]+(?:\\s+[A-Z][a-z]+){1,4}\\s+(?:${STREET_TYPES}))`, "i"),
+    // Simple: "on Oak Street"
+    new RegExp(`(?:on|at)\\s+([A-Z][a-z]+\\s+(?:${STREET_TYPES}))`, "i"),
+  ];
+  
+  for (const pattern of onAtPatterns) {
+    const match = text.match(pattern);
+    if (match && match[1]) {
+      // Skip if it matches "on my street" or similar
+      if (/^(?:my|the|our|this)\s/i.test(match[1])) continue;
+      console.log(`[extractAddressFromText] Pattern 3b (on/at + street) MATCHED: "${match[1]}"`);
+      return { address: match[1].replace(/[.,!?]$/, "").trim(), pattern: "on-at-street" };
+    }
   }
 
   // Pattern 4: Any text ending in a street type (less confident)
@@ -1899,10 +1925,21 @@ function extractAddressFromText(text: string): { address: string | null; pattern
 export function extractAddress(messages: VapiMessage[], transcript?: string): { address: string; source: string } {
   console.log("[extractAddress] ====== ADDRESS EXTRACTION START ======");
   
-  // Pass A: Try artifact.messages
   const userMessages = messages.filter(m => m.role === "user");
   console.log(`[extractAddress] Processing ${userMessages.length} user messages`);
   
+  // ============================================================
+  // PHASE 2 HARDENING: Two-phase extraction
+  // ============================================================
+  // Phase 1: Look for SPECIFIC addresses (numeric, spoken, prefix patterns)
+  // Phase 2: Only if Phase 1 fails, accept contextual/approximate addresses
+  // This prevents "my street" from being captured when a specific address
+  // is mentioned later in the conversation.
+  // ============================================================
+  
+  let contextualCandidate: { address: string; source: string } | null = null;
+  
+  // Phase 1: Search ALL messages for specific addresses first
   for (let i = 0; i < userMessages.length; i++) {
     const msg = userMessages[i];
     const preview = msg.message.substring(0, 150);
@@ -1912,22 +1949,35 @@ export function extractAddress(messages: VapiMessage[], transcript?: string): { 
     console.log(`[extractAddress] → Pattern result: ${result.pattern}, address: ${result.address ? `"${result.address}"` : 'null'}`);
     
     if (result.address) {
+      // Check if this is a contextual/approximate pattern
+      const isContextual = result.pattern.startsWith("contextual-") || result.pattern === "cross-street";
+      
       // Normalize spoken numbers → digits
       const normalized = normalizeSpokenAddress(result.address);
-      console.log(`[extractAddress] → Normalized: "${normalized}"`);
-      // Validate before returning - reject garbage values
+      console.log(`[extractAddress] → Normalized: "${normalized}" (contextual: ${isContextual})`);
+      
+      // Validate before accepting
       const validated = validateExtractedAddress(normalized);
       if (validated) {
-        console.log(`[extractAddress] ====== FOUND ADDRESS: "${validated}" (source: messages/${result.pattern}) ======`);
-        return { address: validated, source: `messages/${result.pattern}` };
+        if (isContextual) {
+          // Save contextual as fallback, keep searching for specific address
+          if (!contextualCandidate) {
+            contextualCandidate = { address: validated, source: `messages/${result.pattern}` };
+            console.log(`[extractAddress] → Saved as contextual fallback, continuing search for specific address`);
+          }
+        } else {
+          // Found specific address - return immediately
+          console.log(`[extractAddress] ====== FOUND SPECIFIC ADDRESS: "${validated}" (source: messages/${result.pattern}) ======`);
+          return { address: validated, source: `messages/${result.pattern}` };
+        }
+      } else {
+        console.log(`[extractAddress] → Validation REJECTED normalized address`);
       }
-      // Validation failed - continue searching
-      console.log(`[extractAddress] → Validation REJECTED normalized address`);
     }
   }
-  console.log("[extractAddress] No valid address found in messages, trying transcript...");
+  console.log("[extractAddress] No specific address found in messages, trying transcript...");
 
-  // Pass B: Try transcript string
+  // Try transcript for specific addresses
   if (transcript) {
     const transcriptPreview = transcript.substring(0, 300);
     console.log(`[extractAddress] Transcript preview: "${transcriptPreview}${transcript.length > 300 ? '...' : ''}"`);
@@ -1936,20 +1986,33 @@ export function extractAddress(messages: VapiMessage[], transcript?: string): { 
     console.log(`[extractAddress] → Transcript pattern result: ${result.pattern}, address: ${result.address ? `"${result.address}"` : 'null'}`);
     
     if (result.address) {
-      // Normalize spoken numbers → digits
+      const isContextual = result.pattern.startsWith("contextual-") || result.pattern === "cross-street";
       const normalized = normalizeSpokenAddress(result.address);
-      console.log(`[extractAddress] → Normalized: "${normalized}"`);
-      // Validate before returning - reject garbage values
+      console.log(`[extractAddress] → Normalized: "${normalized}" (contextual: ${isContextual})`);
+      
       const validated = validateExtractedAddress(normalized);
       if (validated) {
-        console.log(`[extractAddress] ====== FOUND ADDRESS: "${validated}" (source: transcript/${result.pattern}) ======`);
-        return { address: validated, source: `transcript/${result.pattern}` };
+        if (isContextual) {
+          if (!contextualCandidate) {
+            contextualCandidate = { address: validated, source: `transcript/${result.pattern}` };
+            console.log(`[extractAddress] → Saved as contextual fallback`);
+          }
+        } else {
+          console.log(`[extractAddress] ====== FOUND SPECIFIC ADDRESS: "${validated}" (source: transcript/${result.pattern}) ======`);
+          return { address: validated, source: `transcript/${result.pattern}` };
+        }
+      } else {
+        console.log(`[extractAddress] → Validation REJECTED normalized address`);
       }
-      // Validation failed - fall through to default
-      console.log(`[extractAddress] → Validation REJECTED normalized address`);
     }
   } else {
     console.log("[extractAddress] No transcript provided");
+  }
+
+  // Phase 2: If no specific address found, use contextual fallback
+  if (contextualCandidate) {
+    console.log(`[extractAddress] ====== USING CONTEXTUAL FALLBACK: "${contextualCandidate.address}" ======`);
+    return contextualCandidate;
   }
 
   console.log("[extractAddress] ====== NO ADDRESS FOUND - returning 'Not provided' ======");
