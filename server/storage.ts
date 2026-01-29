@@ -17,6 +17,7 @@ export interface IStorage {
   getRecord(id: string): Promise<IntakeRecord | undefined>;
   createRecord(record: InsertIntakeRecord): Promise<IntakeRecord>;
   updateRecord(id: string, updates: Partial<InsertIntakeRecord>): Promise<IntakeRecord | undefined>;
+  deleteRecord(id: string, clientId?: string): Promise<boolean>;
   getStats(clientId?: string): Promise<DashboardStats>;
   getClients(): Promise<Client[]>;
   // Email routing methods
@@ -207,6 +208,12 @@ export class MemStorage implements IStorage {
     return updated;
   }
 
+  async deleteRecord(id: string, _clientId?: string): Promise<boolean> {
+    if (!this.records.has(id)) return false;
+    this.records.delete(id);
+    return true;
+  }
+
   async getStats(clientId?: string): Promise<DashboardStats> {
     let records = Array.from(this.records.values());
     
@@ -373,6 +380,28 @@ export class SupabaseStorage implements IStorage {
     }
 
     return data ? dbToIntakeRecord(data as DBInteraction) : undefined;
+  }
+
+  async deleteRecord(id: string, clientId?: string): Promise<boolean> {
+    let query = this.supabase
+      .from("interactions")
+      .delete()
+      .eq("id", id);
+
+    // If clientId provided, ensure client ownership
+    if (clientId && clientId !== "all") {
+      query = query.eq("client_id", clientId);
+    }
+
+    const { error, count } = await query;
+
+    if (error) {
+      console.error("[SupabaseStorage.deleteRecord]", error);
+      return false;
+    }
+
+    console.log(`[SupabaseStorage.deleteRecord] Deleted record ${id}`);
+    return true;
   }
 
   async getStats(clientId?: string): Promise<DashboardStats> {

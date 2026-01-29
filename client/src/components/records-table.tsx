@@ -1,3 +1,5 @@
+import { useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Table,
   TableBody,
@@ -6,8 +8,20 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
-import { Phone, MessageSquare } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Phone, MessageSquare, Trash2 } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
 import type { IntakeRecord } from "@shared/schema";
 
 interface RecordsTableProps {
@@ -17,6 +31,52 @@ interface RecordsTableProps {
 }
 
 export function RecordsTable({ records, showCost = false, isLoading = false }: RecordsTableProps) {
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [recordToDelete, setRecordToDelete] = useState<IntakeRecord | null>(null);
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const response = await fetch(`/api/records/${id}`, {
+        method: "DELETE",
+      });
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || "Failed to delete record");
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/records"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
+      toast({
+        title: "Record deleted",
+        description: "The intake record has been permanently deleted.",
+      });
+      setDeleteDialogOpen(false);
+      setRecordToDelete(null);
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Delete failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleDeleteClick = (record: IntakeRecord) => {
+    setRecordToDelete(record);
+    setDeleteDialogOpen(true);
+  };
+
+  const confirmDelete = () => {
+    if (recordToDelete) {
+      deleteMutation.mutate(recordToDelete.id);
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="rounded-lg border border-card-border bg-card/50 overflow-hidden">
@@ -87,6 +147,7 @@ export function RecordsTable({ records, showCost = false, isLoading = false }: R
               <TableHead className={`${headerBase} w-[50px] text-right`}>Cost</TableHead>
             )}
             <TableHead className={`${headerBase} w-[80px]`}>Time</TableHead>
+            <TableHead className={`${headerBase} w-[36px]`}></TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -141,10 +202,45 @@ export function RecordsTable({ records, showCost = false, isLoading = false }: R
               <TableCell className={`${cellClass} text-xs text-muted-foreground whitespace-nowrap`}>
                 {formatTimestamp(record.timestamp)}
               </TableCell>
+              <TableCell className={`${cellClass} text-center`}>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6 text-muted-foreground hover:text-destructive"
+                  onClick={() => handleDeleteClick(record)}
+                  title="Delete record"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </TableCell>
             </TableRow>
           ))}
         </TableBody>
       </Table>
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this record?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete the intake record for{" "}
+              <span className="font-medium text-foreground">{recordToDelete?.name}</span>.
+              This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteMutation.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmDelete}
+              disabled={deleteMutation.isPending}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deleteMutation.isPending ? "Deleting..." : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

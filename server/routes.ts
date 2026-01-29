@@ -170,6 +170,26 @@ export async function registerRoutes(
     }
   });
 
+  // Delete a record
+  app.delete("/api/records/:id", conditionalAuth, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const clientId = getEffectiveClientId(req);
+      
+      const deleted = await storage.deleteRecord(id, clientId);
+      
+      if (!deleted) {
+        return res.status(404).json({ error: "Record not found" });
+      }
+      
+      console.log(`[routes] Record ${id} deleted by client ${clientId}`);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("[routes] Failed to delete record:", error);
+      res.status(500).json({ error: "Failed to delete record" });
+    }
+  });
+
   // Clients list - super admin only when auth is enabled
   app.get("/api/clients", conditionalAuth, conditionalSuperAdmin, async (_req, res) => {
     try {
