@@ -367,33 +367,10 @@ export function validateExtractedName(name: string): string | null {
     return null;
   }
 
-  // Single-word check: reject if it's a common English word that's unlikely to be a name
-  // This catches transcription errors like "soda", "snow", "about", etc.
-  // NOTE: Some words that are common English words ARE valid Spanish names (e.g., "Luz", "Rosa", "Cruz", "Mar")
-  // These are handled by the VALID_SPANISH_NAMES set below
-  const COMMON_NON_NAME_WORDS = new Set([
-    // Common nouns
-    "soda", "snow", "water", "phone", "help", "issue", "problem", "street",
-    "road", "pothole", "light", "tree", "sign", "garbage", "trash", "car",
-    "house", "home", "work", "today", "tomorrow", "morning", "afternoon",
-    "evening", "night", "week", "month", "year", "time", "day", "place",
-    "thing", "stuff", "matter", "question", "answer", "note", "message",
-    // Prepositions/conjunctions/adverbs
-    "about", "from", "with", "into", "onto", "over", "under", "before",
-    "after", "during", "through", "between", "among", "against", "within",
-    // Common verbs (base form)
-    "help", "call", "text", "send", "fix", "check", "look", "find", "tell",
-    // Food/drink items (often misheard)
-    "soda", "coffee", "tea", "food", "pizza", "burger",
-    // Weather words - REMOVED "snow" as it could be a surname
-    "rain", "wind", "cold", "hot", "warm", "sunny",
-    // Question words
-    "what", "where", "when", "why", "how", "who", "which",
-  ]);
-
+  // Define word sets early so they can be used in all checks below
+  
   // Valid Spanish names that might look like common English words
   // These should NOT be rejected even though they appear in word lists
-  // Phase 1 Spanish Hardening: Allow legitimate Spanish given names
   const VALID_SPANISH_NAMES = new Set([
     "luz",      // Light (common female name)
     "rosa",     // Rose (common female name)
@@ -415,9 +392,57 @@ export function validateExtractedName(name: string): string | null {
     "santos",   // Saints (male name)
     "reyes",    // Kings (surname)
     "flores",   // Flowers (surname)
+    "snow",     // Can be a valid surname (Johnny Snow)
   ]);
 
-  // Check if it's a valid Spanish name before rejecting
+  // Common non-name words that should be rejected
+  const COMMON_NON_NAME_WORDS = new Set([
+    // Common nouns
+    "soda", "water", "phone", "help", "issue", "problem", "street",
+    "road", "pothole", "light", "tree", "sign", "garbage", "trash", "car",
+    "house", "home", "work", "today", "tomorrow", "morning", "afternoon",
+    "evening", "night", "week", "month", "year", "time", "day", "place",
+    "thing", "stuff", "matter", "question", "answer", "note", "message",
+    // Prepositions/conjunctions/adverbs
+    "about", "from", "with", "into", "onto", "over", "under", "before",
+    "after", "during", "through", "between", "among", "against", "within",
+    "because", "however", "therefore", "although", "unless", "until",
+    // Common verbs (base form)
+    "help", "call", "text", "send", "fix", "check", "look", "find", "tell",
+    // Food/drink items (often misheard)
+    "soda", "coffee", "tea", "food", "pizza", "burger",
+    // Weather words
+    "rain", "wind", "cold", "hot", "warm", "sunny",
+    // Question words
+    "what", "where", "when", "why", "how", "who", "which",
+  ]);
+
+  // Number words that indicate address fragment (not names)
+  const NUMBER_STARTERS = new Set([
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+    "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen",
+    "eighteen", "nineteen", "twenty", "thirty", "forty", "fifty",
+    "uno", "dos", "tres", "cuatro", "cinco", "seis", "siete", "ocho", "nueve", "diez",
+  ]);
+
+  // Phase 1 Hardening: Reject single lowercase words (almost never valid names)
+  // Exception: Valid Spanish names that may appear lowercase in transcription
+  if (words.length === 1 && trimmed === trimmed.toLowerCase()) {
+    if (VALID_SPANISH_NAMES.has(words[0])) {
+      console.log(`[validate-name] ACCEPTED (valid Spanish name): "${trimmed}"`);
+      return trimmed;
+    }
+    console.log(`[validate-name] REJECTED (single lowercase word): "${trimmed}"`);
+    return null;
+  }
+
+  // Phase 1 Hardening: Reject if starts with number word (likely address fragment)
+  if (words.length > 1 && NUMBER_STARTERS.has(words[0])) {
+    console.log(`[validate-name] REJECTED (starts with number word): "${trimmed}"`);
+    return null;
+  }
+
+  // Check if it's a valid Spanish name (capitalized version)
   if (words.length === 1 && VALID_SPANISH_NAMES.has(words[0])) {
     console.log(`[validate-name] ACCEPTED (valid Spanish name): "${trimmed}"`);
     return trimmed;
@@ -496,111 +521,313 @@ export function validateExtractedAddress(address: string): string | null {
 const NAME_CHAR_CLASS = "[A-Za-z\\u00C0-\\u00FF]";
 const NAME_WORD_PATTERN = `${NAME_CHAR_CLASS}${NAME_CHAR_CLASS}*(?:'|-)?${NAME_CHAR_CLASS}*`;
 
+// ============================================================
+// MULTI-CANDIDATE NAME EXTRACTION WITH SCORING (Phase 1 Hardening)
+// ============================================================
+// Instead of "first valid match wins", we now:
+// 1. Collect ALL candidates from the full transcript
+// 2. Score each candidate based on confidence signals
+// 3. Select the highest-scoring candidate that passes validation
+// ============================================================
+
+interface NameCandidate {
+  value: string;
+  pattern: string;
+  score: number;
+  messageIndex: number;
+  rawMatch: string; // Original matched text before cleanup
+}
+
+// Base scores for different pattern types (higher = more confident)
+const PATTERN_BASE_SCORES: Record<string, number> = {
+  // Explicit name triggers (highest confidence)
+  "my name is": 100,
+  "mi nombre es": 100,
+  "me llamo": 95,
+  "name is": 90,
+  // Self-identification (medium-high confidence)
+  "this is": 80,
+  "habla": 75,
+  "soy": 70,
+  // Weaker triggers (can capture verb phrases)
+  "it's": 50,
+  "yeah it's": 50,
+  "i'm": 40, // Often followed by verbs: "I'm calling", "I'm reporting"
+  // Bare name patterns (low confidence)
+  "bare name": 30,
+  "bare name label": 35,
+};
+
 /**
- * Extract caller name from text using multiple patterns
- * Supports English and Spanish name trigger phrases
- * Returns { name, source } for logging
+ * Extract ALL name candidates from text (does not select - just collects)
+ * Returns array of candidates with scores for later selection
  */
-function extractNameFromText(text: string): { name: string | null; pattern: string } {
-  if (!text) return { name: null, pattern: "empty" };
+function extractAllNameCandidates(text: string, messageIndex: number): NameCandidate[] {
+  if (!text) return [];
+
+  const candidates: NameCandidate[] = [];
 
   // Pattern 1: Explicit name phrases (highest confidence)
-  // Includes both English and Spanish triggers
   const explicitPatterns = [
-    // English patterns
-    { regex: new RegExp(`(?:my name is|name is)\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "i"), name: "my name is" },
-    { regex: new RegExp(`(?:i'm|i am)\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "i"), name: "i'm" },
-    { regex: new RegExp(`(?:this is)\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "i"), name: "this is" },
-    { regex: new RegExp(`(?:it's|it is)\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "i"), name: "it's" },
-    { regex: new RegExp(`(?:yeah,?\\s*)?(?:it's|it is)\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "i"), name: "yeah it's" },
-    // Spanish patterns (Phase 1 Spanish Hardening)
-    // "me llamo Juan García" → "Juan García"
-    { regex: new RegExp(`(?:me llamo)\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "i"), name: "me llamo" },
-    // "mi nombre es María" → "María"
-    { regex: new RegExp(`(?:mi nombre es)\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "i"), name: "mi nombre es" },
-    // "soy Carlos Rodríguez" → "Carlos Rodríguez"
-    // Note: "soy" can also mean "I am [adjective]" so we validate the captured text
-    { regex: new RegExp(`(?:soy)\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "i"), name: "soy" },
-    // "habla Juan" / "le habla María" → extract name after "habla"
-    { regex: new RegExp(`(?:le\\s+)?habla\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "i"), name: "habla" },
+    // English patterns - ordered by confidence
+    { regex: new RegExp(`(?:my name is|name is)\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "gi"), pattern: "my name is" },
+    { regex: new RegExp(`(?:this is)\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "gi"), pattern: "this is" },
+    { regex: new RegExp(`(?:it's|it is)\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "gi"), pattern: "it's" },
+    { regex: new RegExp(`(?:i'm|i am)\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "gi"), pattern: "i'm" },
+    // Spanish patterns
+    { regex: new RegExp(`(?:me llamo)\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "gi"), pattern: "me llamo" },
+    { regex: new RegExp(`(?:mi nombre es)\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "gi"), pattern: "mi nombre es" },
+    { regex: new RegExp(`(?:soy)\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "gi"), pattern: "soy" },
+    { regex: new RegExp(`(?:le\\s+)?habla\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "gi"), pattern: "habla" },
   ];
 
-  for (const { regex, name: patternName } of explicitPatterns) {
-    const match = text.match(regex);
-    if (match && match[1]) {
-      const candidate = match[1].replace(/[.,!?]$/, "").trim();
-      const words = candidate.split(/\s+/).filter(isValidNameWord);
-      if (words.length >= 1 && words.length <= 3) {
-        return { name: words.join(" "), pattern: patternName };
+  for (const { regex, pattern } of explicitPatterns) {
+    // Use matchAll to find ALL occurrences, not just first
+    // Convert to array for TypeScript compatibility
+    const matches = Array.from(text.matchAll(regex));
+    for (const match of matches) {
+      if (match[1]) {
+        const rawMatch = match[1];
+        const cleaned = rawMatch.replace(/[.,!?]$/, "").trim();
+        const words = cleaned.split(/\s+/).filter(isValidNameWord);
+        
+        if (words.length >= 1 && words.length <= 3) {
+          const value = words.join(" ");
+          let score = PATTERN_BASE_SCORES[pattern] || 50;
+          
+          // Score adjustments based on quality signals
+          score += calculateNameScoreAdjustments(value, cleaned, text, match.index || 0);
+          
+          candidates.push({
+            value,
+            pattern,
+            score,
+            messageIndex,
+            rawMatch: cleaned,
+          });
+        }
       }
     }
   }
 
-  // Pattern 2: Bare name anywhere in text (e.g., "Customer: Johnny Snow. Agent:...")
-  // Look for 1-3 capitalized words followed by a period or sentence break
-  // Use word boundary to avoid matching mid-sentence
-  // Supports accented characters for Spanish names (e.g., "García", "Rodríguez")
-  const UPPER_CHAR = "[A-Z\\u00C0-\\u00D6\\u00D8-\\u00DE]"; // Uppercase + accented uppercase
-  const LOWER_CHAR = "[a-z\\u00DF-\\u00F6\\u00F8-\\u00FF]"; // Lowercase + accented lowercase
+  // Pattern 2: Bare name patterns (lower confidence)
+  const UPPER_CHAR = "[A-Z\\u00C0-\\u00D6\\u00D8-\\u00DE]";
+  const LOWER_CHAR = "[a-z\\u00DF-\\u00F6\\u00F8-\\u00FF]";
   const bareNamePatterns = [
-    // After "Customer:" or similar speaker labels (English + Spanish)
-    new RegExp(`(?:Customer|Caller|User|Speaker|Cliente|Usuario):\\s*(${UPPER_CHAR}${LOWER_CHAR}+(?:\\s+${UPPER_CHAR}${LOWER_CHAR}+){0,2})[.,]`),
-    // At start of text
-    new RegExp(`^(${UPPER_CHAR}${LOWER_CHAR}+(?:\\s+${UPPER_CHAR}${LOWER_CHAR}+){0,2})[.,]`),
-    // After newline or double space
-    new RegExp(`(?:\\n|  )(${UPPER_CHAR}${LOWER_CHAR}+(?:\\s+${UPPER_CHAR}${LOWER_CHAR}+){0,2})[.,]`),
+    { regex: new RegExp(`(?:Customer|Caller|User|Speaker|Cliente|Usuario):\\s*(${UPPER_CHAR}${LOWER_CHAR}+(?:\\s+${UPPER_CHAR}${LOWER_CHAR}+){0,2})[.,]`, "g"), pattern: "bare name label" },
+    { regex: new RegExp(`(?:^|\\n|  )(${UPPER_CHAR}${LOWER_CHAR}+(?:\\s+${UPPER_CHAR}${LOWER_CHAR}+){0,2})[.,]`, "g"), pattern: "bare name" },
   ];
 
-  for (const pattern of bareNamePatterns) {
-    const bareNameMatch = text.match(pattern);
-    if (bareNameMatch && bareNameMatch[1]) {
-      const words = bareNameMatch[1].split(/\s+/).filter(isValidNameWord);
-      if (words.length >= 1 && words.length <= 3) {
-        return { name: words.join(" "), pattern: "bare name" };
+  for (const { regex, pattern } of bareNamePatterns) {
+    // Convert to array for TypeScript compatibility
+    const matches = Array.from(text.matchAll(regex));
+    for (const match of matches) {
+      if (match[1]) {
+        const cleaned = match[1].trim();
+        const words = cleaned.split(/\s+/).filter(isValidNameWord);
+        
+        if (words.length >= 1 && words.length <= 3) {
+          const value = words.join(" ");
+          let score = PATTERN_BASE_SCORES[pattern] || 30;
+          score += calculateNameScoreAdjustments(value, cleaned, text, match.index || 0);
+          
+          candidates.push({
+            value,
+            pattern,
+            score,
+            messageIndex,
+            rawMatch: cleaned,
+          });
+        }
       }
     }
   }
 
+  return candidates;
+}
+
+/**
+ * Calculate score adjustments based on quality signals
+ */
+function calculateNameScoreAdjustments(value: string, rawMatch: string, fullText: string, matchIndex: number): number {
+  let adjustment = 0;
+  const words = value.split(/\s+/);
+  const lowerValue = value.toLowerCase();
+
+  // POSITIVE signals
+  
+  // +15: Has 2-3 words (full name is more confident)
+  if (words.length >= 2 && words.length <= 3) {
+    adjustment += 15;
+  }
+  
+  // +10: All words are capitalized (proper noun pattern)
+  const allCapitalized = words.every(w => /^[A-Z\u00C0-\u00D6\u00D8-\u00DE]/.test(w));
+  if (allCapitalized) {
+    adjustment += 10;
+  }
+  
+  // +5: Appears later in transcript (late-stated names are often corrections)
+  if (matchIndex > 100) {
+    adjustment += 5;
+  }
+  if (matchIndex > 300) {
+    adjustment += 5; // Additional bonus for very late mentions
+  }
+
+  // NEGATIVE signals
+  
+  // -30: Single lowercase word (almost never a valid name)
+  if (words.length === 1 && value === lowerValue) {
+    adjustment -= 30;
+  }
+  
+  // -20: Looks like it's part of an address (contains common address words)
+  const addressWords = ["la", "el", "los", "las", "calle", "avenida", "street", "avenue", "road", "drive"];
+  if (words.some(w => addressWords.includes(w.toLowerCase()))) {
+    adjustment -= 20;
+  }
+  
+  // -25: Appears right after "calling" or "texting" context (likely verb phrase)
+  const contextBefore = fullText.substring(Math.max(0, matchIndex - 30), matchIndex).toLowerCase();
+  if (/(?:i'm|i am)\s*$/.test(contextBefore) && /^(calling|texting|reporting|asking|checking)/i.test(rawMatch)) {
+    adjustment -= 25;
+  }
+  
+  // -15: Single word that looks like a common noun (not in Spanish names list)
+  if (words.length === 1) {
+    const commonNouns = new Set([
+      "five", "three", "one", "two", "four", "six", "seven", "eight", "nine", "ten",
+      "first", "second", "third", "north", "south", "east", "west",
+      "main", "oak", "pine", "maple", "elm", "cedar", "park", "lake",
+    ]);
+    if (commonNouns.has(lowerValue)) {
+      adjustment -= 15;
+    }
+  }
+
+  // -20: Starts with a number word followed by more words (likely address fragment)
+  const numberStarters = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+    "eleven", "twelve", "uno", "dos", "tres", "cuatro", "cinco"];
+  if (words.length > 1 && numberStarters.includes(words[0].toLowerCase())) {
+    adjustment -= 20;
+  }
+
+  return adjustment;
+}
+
+/**
+ * Legacy function for backward compatibility - extracts first match only
+ * Used by SMS extraction which doesn't need multi-candidate scoring
+ */
+function extractNameFromText(text: string): { name: string | null; pattern: string } {
+  const candidates = extractAllNameCandidates(text, 0);
+  if (candidates.length > 0) {
+    // Return highest scoring candidate
+    candidates.sort((a, b) => b.score - a.score);
+    return { name: candidates[0].value, pattern: candidates[0].pattern };
+  }
   return { name: null, pattern: "no match" };
 }
 
 /**
- * Extract caller name from transcript (two-pass)
- * Pass A: artifact.messages (structured)
- * Pass B: transcript string (fallback)
+ * Extract caller name from transcript using MULTI-CANDIDATE SCORING
+ * 
+ * Phase 1 Hardening: Instead of "first valid match wins", we now:
+ * 1. Collect ALL candidates from ALL messages (late-binding)
+ * 2. Score each candidate based on confidence signals
+ * 3. Select the highest-scoring candidate that passes validation
+ * 4. Cross-validate against extracted address to catch bleeding
  *
- * Applies post-extraction validation to catch garbage values
+ * @param messages - Array of VapiMessage objects
+ * @param transcript - Full transcript string (fallback source)
+ * @param extractedAddress - Optional: address already extracted (for cross-validation)
  */
-export function extractName(messages: VapiMessage[], transcript?: string): { name: string; source: string } {
-  // Pass A: Try artifact.messages
+export function extractName(
+  messages: VapiMessage[], 
+  transcript?: string,
+  extractedAddress?: string
+): { name: string; source: string } {
+  
+  console.log("[extractName] ====== MULTI-CANDIDATE EXTRACTION START ======");
+  
+  // Step 1: Collect ALL candidates from ALL sources (late-binding)
+  const allCandidates: NameCandidate[] = [];
+  
+  // Source A: artifact.messages (structured user messages)
   const userMessages = messages.filter(m => m.role === "user");
-  for (const msg of userMessages) {
-    const result = extractNameFromText(msg.message);
-    if (result.name) {
-      // Validate before returning - reject garbage values
-      const validated = validateExtractedName(result.name);
-      if (validated) {
-        return { name: validated, source: `messages/${result.pattern}` };
-      }
-      // Validation failed - continue searching
-      console.log(`[extractName] Regex matched "${result.name}" but validation rejected it`);
-    }
-  }
-
-  // Pass B: Try transcript string
+  userMessages.forEach((msg, idx) => {
+    const candidates = extractAllNameCandidates(msg.message, idx);
+    allCandidates.push(...candidates);
+  });
+  
+  console.log(`[extractName] Found ${allCandidates.length} candidates from messages`);
+  
+  // Source B: transcript string (fallback - may have different segmentation)
   if (transcript) {
-    const result = extractNameFromText(transcript);
-    if (result.name) {
-      // Validate before returning - reject garbage values
-      const validated = validateExtractedName(result.name);
-      if (validated) {
-        return { name: validated, source: `transcript/${result.pattern}` };
+    const transcriptCandidates = extractAllNameCandidates(transcript, 999);
+    // Avoid duplicates by checking if value already exists
+    for (const tc of transcriptCandidates) {
+      const isDuplicate = allCandidates.some(c => 
+        c.value.toLowerCase() === tc.value.toLowerCase()
+      );
+      if (!isDuplicate) {
+        // Slightly lower score for transcript-only matches (less structured)
+        tc.score -= 5;
+        allCandidates.push(tc);
       }
-      // Validation failed - fall through to default
-      console.log(`[extractName] Regex matched "${result.name}" but validation rejected it`);
+    }
+    console.log(`[extractName] Total candidates after transcript: ${allCandidates.length}`);
+  }
+  
+  // Step 2: Cross-field validation - penalize candidates that overlap with address
+  if (extractedAddress && extractedAddress !== "Not provided") {
+    const addressLower = extractedAddress.toLowerCase();
+    for (const candidate of allCandidates) {
+      const nameLower = candidate.value.toLowerCase();
+      const nameWords = nameLower.split(/\s+/);
+      
+      // Check if name words appear in address (address bleeding)
+      const overlapCount = nameWords.filter(w => 
+        w.length > 2 && addressLower.includes(w)
+      ).length;
+      
+      if (overlapCount > 0) {
+        const penalty = overlapCount * 20;
+        console.log(`[extractName] Cross-field penalty: "${candidate.value}" overlaps with address, -${penalty}`);
+        candidate.score -= penalty;
+      }
     }
   }
-
+  
+  // Step 3: Sort by score (highest first) and select best valid candidate
+  allCandidates.sort((a, b) => b.score - a.score);
+  
+  // Log top candidates for debugging
+  const topCandidates = allCandidates.slice(0, 5);
+  console.log("[extractName] Top candidates:");
+  topCandidates.forEach((c, i) => {
+    console.log(`  ${i + 1}. "${c.value}" | pattern=${c.pattern} | score=${c.score} | msg=${c.messageIndex}`);
+  });
+  
+  // Step 4: Select highest-scoring candidate that passes validation
+  for (const candidate of allCandidates) {
+    const validated = validateExtractedName(candidate.value);
+    if (validated) {
+      const source = candidate.messageIndex === 999 
+        ? `transcript/${candidate.pattern}` 
+        : `messages[${candidate.messageIndex}]/${candidate.pattern}`;
+      
+      console.log(`[extractName] SELECTED: "${validated}" | score=${candidate.score} | source=${source}`);
+      console.log("[extractName] ====== MULTI-CANDIDATE EXTRACTION END ======");
+      return { name: validated, source };
+    }
+    console.log(`[extractName] Candidate "${candidate.value}" failed validation`);
+  }
+  
+  // No valid candidates found
+  console.log("[extractName] No valid candidates found, using default");
+  console.log("[extractName] ====== MULTI-CANDIDATE EXTRACTION END ======");
   return { name: "Unknown Caller", source: "default" };
 }
 
@@ -1080,6 +1307,9 @@ export function extractPhoneNumber(payload: VapiWebhookPayload): string {
 /**
  * Transform Vapi end-of-call-report into partial IntakeRecord
  * Returns record without intent/department/summary - those are added by the classifier
+ * 
+ * Phase 1 Hardening: Uses multi-candidate scoring for name extraction
+ * and cross-field validation to prevent address bleeding into name.
  */
 export function transformVapiToIntakeRecord(payload: VapiWebhookPayload): PartialIntakeRecord & { rawText: string } {
   const msg = payload.message;
@@ -1095,13 +1325,15 @@ export function transformVapiToIntakeRecord(payload: VapiWebhookPayload): Partia
   const messages = cleanMessagesForExtraction(rawMessages);
   const transcript = cleanTranscriptForExtraction(rawTranscript);
 
-  // Extract name with two-pass strategy (uses cleaned input)
-  const nameResult = extractName(messages, transcript);
-  console.log("[vapi-transform] NAME extracted:", nameResult.name, "| source:", nameResult.source);
-
-  // Extract address with two-pass strategy (uses cleaned input)
+  // IMPORTANT: Extract address FIRST so we can use it for cross-validation
+  // This prevents address fragments from bleeding into the name field
   const addressResult = extractAddress(messages, transcript);
   console.log("[vapi-transform] ADDRESS extracted:", addressResult.address, "| source:", addressResult.source);
+
+  // Extract name with multi-candidate scoring (Phase 1 Hardening)
+  // Pass extracted address for cross-field validation
+  const nameResult = extractName(messages, transcript, addressResult.address);
+  console.log("[vapi-transform] NAME extracted:", nameResult.name, "| source:", nameResult.source);
 
   // Detect language (uses RAW messages - LLM handles filler words fine)
   const language = detectLanguage(rawMessages);
