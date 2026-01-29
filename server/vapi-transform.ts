@@ -320,17 +320,96 @@ const NON_NAME_PHRASE_PATTERNS = [
  * Validate extracted name - catches garbage that regex missed
  * Returns null if name is invalid (caller should use default)
  *
- * Validation rules:
+ * Validation rules (Phase 1 Hardening):
  * - Reject verb phrases (calling, reporting, looking, etc.)
  * - Reject common non-name phrases
  * - Reject names < 2 chars or > 50 chars
  * - Reject numeric-only values
  * - Reject single common words
+ * - CRITICAL: Reject organization/entity/brand names
+ * - CRITICAL: Reject system/AI/department names
  */
 export function validateExtractedName(name: string): string | null {
   if (!name || name.trim().length === 0) return null;
 
   const trimmed = name.trim();
+  const words = trimmed.toLowerCase().split(/\s+/);
+
+  // ============================================================
+  // ORGANIZATION / ENTITY REJECTION LAYER (CRITICAL - Phase 1 Hardening)
+  // ============================================================
+  // These keywords indicate the candidate is an organization, department,
+  // system name, or brand - NOT a human name. Must reject immediately.
+  // ============================================================
+  
+  const ORGANIZATION_KEYWORDS = new Set([
+    // Civic / government terms
+    "city", "county", "state", "federal", "municipal", "government", "gov",
+    "department", "dept", "division", "bureau", "agency", "office",
+    "public", "works", "utilities", "utility", "safety", "services", "service",
+    "authority", "district", "commission", "board", "council", "committee",
+    "administration", "admin", "management", "operations",
+    // Infrastructure / municipal services
+    "water", "sewer", "sanitation", "waste", "recycling", "parks", "recreation",
+    "transportation", "transit", "traffic", "roads", "streets", "highways",
+    "police", "fire", "emergency", "ems", "ambulance", "rescue",
+    "planning", "zoning", "building", "permits", "inspection", "code",
+    "housing", "development", "economic", "community",
+    // System / AI / technology terms
+    "ai", "bot", "assistant", "system", "systems", "platform", "software",
+    "intake", "automated", "automation", "digital", "virtual", "voice",
+    "inbot", "vapi", "twilio", "openai", "chatgpt", "alexa", "siri",
+    // Corporate / business terms
+    "inc", "llc", "corp", "corporation", "company", "co", "ltd", "limited",
+    "enterprise", "enterprises", "group", "holdings", "partners", "associates",
+    "solutions", "consulting", "industries", "international", "global",
+    // Brand names commonly misheard/captured (add as discovered)
+    "coca", "cola", "pepsi", "amazon", "google", "microsoft", "apple",
+    "facebook", "meta", "twitter", "uber", "lyft", "doordash", "grubhub",
+    // Location/place indicators (not person names)
+    "union", "center", "centre", "plaza", "square", "tower", "building",
+    "station", "terminal", "airport", "hospital", "clinic", "school",
+    "university", "college", "institute", "foundation", "museum",
+  ]);
+
+  // Check if ANY word in the candidate is an organization keyword
+  // This catches "Union City AI", "Public Works", "Coca Cola", etc.
+  for (const word of words) {
+    if (ORGANIZATION_KEYWORDS.has(word)) {
+      console.log(`[validate-name] REJECTED (organization keyword "${word}"): "${trimmed}"`);
+      return null;
+    }
+  }
+
+  // Additional organization pattern checks (multi-word patterns)
+  const ORGANIZATION_PATTERNS = [
+    /city\s+of\s+/i,           // "City of X"
+    /county\s+of\s+/i,         // "County of X"
+    /department\s+of\s+/i,     // "Department of X"
+    /\w+\s+department$/i,      // "X Department"
+    /\w+\s+services?$/i,       // "X Services" or "X Service"
+    /\w+\s+authority$/i,       // "X Authority"
+    /\w+\s+district$/i,        // "X District"
+    /\w+\s+commission$/i,      // "X Commission"
+    /\w+\s+inc\.?$/i,          // "X Inc" or "X Inc."
+    /\w+\s+llc\.?$/i,          // "X LLC"
+    /\w+\s+corp\.?$/i,         // "X Corp"
+    /\w+\s+ai$/i,              // "X AI" - catches "Union City AI", "Inbot AI"
+    /\w+\s+bot$/i,             // "X Bot"
+    /\w+\s+assistant$/i,       // "X Assistant"
+    /\w+\s+system$/i,          // "X System"
+  ];
+
+  for (const pattern of ORGANIZATION_PATTERNS) {
+    if (pattern.test(trimmed)) {
+      console.log(`[validate-name] REJECTED (organization pattern): "${trimmed}"`);
+      return null;
+    }
+  }
+
+  // ============================================================
+  // END ORGANIZATION REJECTION LAYER
+  // ============================================================
 
   // Length check
   if (trimmed.length < 2 || trimmed.length > 50) {
@@ -361,13 +440,14 @@ export function validateExtractedName(name: string): string | null {
   }
 
   // Single-word blocklist check (for words that slipped through IGNORE_WORDS)
-  const words = trimmed.toLowerCase().split(/\s+/);
   if (words.length === 1 && IGNORE_WORDS.has(words[0])) {
     console.log(`[validate-name] REJECTED (single ignored word): "${trimmed}"`);
     return null;
   }
 
-  // Define word sets early so they can be used in all checks below
+  // ============================================================
+  // VALID NAME ALLOWLISTS AND BLOCKLISTS
+  // ============================================================
   
   // Valid Spanish names that might look like common English words
   // These should NOT be rejected even though they appear in word lists
@@ -384,7 +464,7 @@ export function validateExtractedName(name: string): string | null {
     "dolores",  // Pains/Sorrows (female name)
     "pilar",    // Pillar (female name)
     "rocio",    // Dew (female name, also "rocío")
-    "mercedes", // Mercies (female name)
+    "mercedes", // Mercies (female name) - NOTE: also a car brand, but common name
     "consuelo", // Consolation (female name)
     "esperanza",// Hope (female name)
     "guadalupe",// Place name (female name)
@@ -395,10 +475,10 @@ export function validateExtractedName(name: string): string | null {
     "snow",     // Can be a valid surname (Johnny Snow)
   ]);
 
-  // Common non-name words that should be rejected
+  // Common non-name words that should be rejected (expanded)
   const COMMON_NON_NAME_WORDS = new Set([
     // Common nouns
-    "soda", "water", "phone", "help", "issue", "problem", "street",
+    "soda", "phone", "help", "issue", "problem", "street",
     "road", "pothole", "light", "tree", "sign", "garbage", "trash", "car",
     "house", "home", "work", "today", "tomorrow", "morning", "afternoon",
     "evening", "night", "week", "month", "year", "time", "day", "place",
@@ -410,11 +490,13 @@ export function validateExtractedName(name: string): string | null {
     // Common verbs (base form)
     "help", "call", "text", "send", "fix", "check", "look", "find", "tell",
     // Food/drink items (often misheard)
-    "soda", "coffee", "tea", "food", "pizza", "burger",
+    "soda", "coffee", "tea", "food", "pizza", "burger", "coke",
     // Weather words
     "rain", "wind", "cold", "hot", "warm", "sunny",
     // Question words
     "what", "where", "when", "why", "how", "who", "which",
+    // Additional words that slip through
+    "super", "fuller", "vienna", // Common false positives from transcription
   ]);
 
   // Number words that indicate address fragment (not names)
@@ -424,6 +506,10 @@ export function validateExtractedName(name: string): string | null {
     "eighteen", "nineteen", "twenty", "thirty", "forty", "fifty",
     "uno", "dos", "tres", "cuatro", "cinco", "seis", "siete", "ocho", "nueve", "diez",
   ]);
+
+  // ============================================================
+  // SINGLE WORD VALIDATION
+  // ============================================================
 
   // Phase 1 Hardening: Reject single lowercase words (almost never valid names)
   // Exception: Valid Spanish names that may appear lowercase in transcription
@@ -453,6 +539,10 @@ export function validateExtractedName(name: string): string | null {
     return null;
   }
 
+  // ============================================================
+  // MULTI-WORD VALIDATION
+  // ============================================================
+
   // Multi-word check: reject if ALL words are common non-name words
   if (words.length > 1) {
     const allCommon = words.every(w => 
@@ -462,6 +552,20 @@ export function validateExtractedName(name: string): string | null {
       console.log(`[validate-name] REJECTED (all words are common): "${trimmed}"`);
       return null;
     }
+  }
+
+  // ============================================================
+  // HUMAN NAME STRUCTURE CHECK (Phase 1 Hardening)
+  // ============================================================
+  // Prefer candidates that match human naming patterns:
+  // - 2-3 words with capitalized first letters
+  // - No organizational keywords (already checked above)
+  // - Doesn't look like a brand or entity
+  
+  // Reject if all words are single capital letter (initials only, too short)
+  if (words.length > 1 && words.every(w => w.length === 1)) {
+    console.log(`[validate-name] REJECTED (initials only): "${trimmed}"`);
+    return null;
   }
 
   // All checks passed
@@ -648,68 +752,133 @@ function extractAllNameCandidates(text: string, messageIndex: number): NameCandi
 
 /**
  * Calculate score adjustments based on quality signals
+ * Phase 1 Hardening: Added strong penalties for organization/entity patterns
  */
 function calculateNameScoreAdjustments(value: string, rawMatch: string, fullText: string, matchIndex: number): number {
   let adjustment = 0;
   const words = value.split(/\s+/);
   const lowerValue = value.toLowerCase();
+  const lowerWords = words.map(w => w.toLowerCase());
 
-  // POSITIVE signals
+  // ============================================================
+  // ORGANIZATION/ENTITY PENALTIES (CRITICAL - must check first)
+  // ============================================================
   
-  // +15: Has 2-3 words (full name is more confident)
+  const ORGANIZATION_KEYWORDS = new Set([
+    // Civic / government
+    "city", "county", "department", "public", "works", "utilities", "safety",
+    "services", "authority", "district", "commission", "municipal", "government",
+    // System / AI
+    "ai", "bot", "assistant", "system", "intake", "automated", "inbot", "vapi",
+    // Corporate
+    "inc", "llc", "corp", "company", "corporation",
+    // Brands commonly misheard
+    "coca", "cola", "pepsi", "amazon", "google",
+    // Location indicators
+    "union", "center", "plaza", "station", "building",
+  ]);
+
+  // -100: Contains organization keyword (almost certainly not a person)
+  for (const word of lowerWords) {
+    if (ORGANIZATION_KEYWORDS.has(word)) {
+      adjustment -= 100;
+      console.log(`[score] -100 for org keyword "${word}" in "${value}"`);
+    }
+  }
+
+  // -80: Ends with AI, Bot, System, Inc, LLC, etc.
+  if (/\s+(ai|bot|system|inc|llc|corp)$/i.test(value)) {
+    adjustment -= 80;
+    console.log(`[score] -80 for entity suffix in "${value}"`);
+  }
+
+  // -60: Looks like a place/organization name ("Union City", "Public Works")
+  if (/^(union|public|general|central|main)\s+/i.test(value)) {
+    adjustment -= 60;
+    console.log(`[score] -60 for org-like prefix in "${value}"`);
+  }
+
+  // ============================================================
+  // POSITIVE signals (for likely human names)
+  // ============================================================
+  
+  // +20: Has 2-3 words (full name pattern - "John Smith", "Maria Garcia Lopez")
   if (words.length >= 2 && words.length <= 3) {
+    adjustment += 20;
+  }
+  
+  // +15: All words are capitalized AND look like name parts (not all caps)
+  const allProperCase = words.every(w => 
+    /^[A-Z\u00C0-\u00D6\u00D8-\u00DE][a-z\u00DF-\u00F6\u00F8-\u00FF]+$/.test(w)
+  );
+  if (allProperCase && words.length >= 2) {
     adjustment += 15;
   }
   
-  // +10: All words are capitalized (proper noun pattern)
-  const allCapitalized = words.every(w => /^[A-Z\u00C0-\u00D6\u00D8-\u00DE]/.test(w));
-  if (allCapitalized) {
+  // +10: Appears later in transcript (late-stated names are often corrections)
+  if (matchIndex > 100) {
     adjustment += 10;
   }
-  
-  // +5: Appears later in transcript (late-stated names are often corrections)
-  if (matchIndex > 100) {
-    adjustment += 5;
-  }
   if (matchIndex > 300) {
-    adjustment += 5; // Additional bonus for very late mentions
+    adjustment += 10; // Additional bonus for very late mentions
   }
 
-  // NEGATIVE signals
+  // +5: Contains common name suffixes (Jr, Sr, III, etc.)
+  if (/\b(jr|sr|ii|iii|iv)\.?$/i.test(value)) {
+    adjustment += 5;
+  }
+
+  // ============================================================
+  // NEGATIVE signals (for non-names)
+  // ============================================================
   
-  // -30: Single lowercase word (almost never a valid name)
+  // -40: Single lowercase word (almost never a valid name)
   if (words.length === 1 && value === lowerValue) {
-    adjustment -= 30;
+    adjustment -= 40;
   }
   
-  // -20: Looks like it's part of an address (contains common address words)
-  const addressWords = ["la", "el", "los", "las", "calle", "avenida", "street", "avenue", "road", "drive"];
-  if (words.some(w => addressWords.includes(w.toLowerCase()))) {
-    adjustment -= 20;
+  // -30: Looks like it's part of an address (contains address words)
+  const addressWords = new Set([
+    "la", "el", "los", "las", "calle", "avenida", "street", "avenue", "road", 
+    "drive", "boulevard", "lane", "way", "court", "place", "north", "south",
+    "east", "west", "main", "first", "second", "third",
+  ]);
+  const addressWordCount = lowerWords.filter(w => addressWords.has(w)).length;
+  if (addressWordCount > 0) {
+    adjustment -= 30 * addressWordCount;
+    console.log(`[score] -${30 * addressWordCount} for address words in "${value}"`);
   }
   
-  // -25: Appears right after "calling" or "texting" context (likely verb phrase)
+  // -35: Appears right after "calling" or "texting" context (likely verb phrase)
   const contextBefore = fullText.substring(Math.max(0, matchIndex - 30), matchIndex).toLowerCase();
   if (/(?:i'm|i am)\s*$/.test(contextBefore) && /^(calling|texting|reporting|asking|checking)/i.test(rawMatch)) {
-    adjustment -= 25;
+    adjustment -= 35;
   }
   
-  // -15: Single word that looks like a common noun (not in Spanish names list)
+  // -25: Single word that looks like a common noun
   if (words.length === 1) {
     const commonNouns = new Set([
       "five", "three", "one", "two", "four", "six", "seven", "eight", "nine", "ten",
       "first", "second", "third", "north", "south", "east", "west",
       "main", "oak", "pine", "maple", "elm", "cedar", "park", "lake",
+      "soda", "help", "because", "about", "super", "fuller", "vienna",
     ]);
     if (commonNouns.has(lowerValue)) {
-      adjustment -= 15;
+      adjustment -= 25;
     }
   }
 
-  // -20: Starts with a number word followed by more words (likely address fragment)
-  const numberStarters = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
-    "eleven", "twelve", "uno", "dos", "tres", "cuatro", "cinco"];
-  if (words.length > 1 && numberStarters.includes(words[0].toLowerCase())) {
+  // -30: Starts with a number word followed by more words (likely address fragment)
+  const numberStarters = new Set([
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+    "eleven", "twelve", "uno", "dos", "tres", "cuatro", "cinco",
+  ]);
+  if (words.length > 1 && numberStarters.has(lowerWords[0])) {
+    adjustment -= 30;
+  }
+
+  // -20: Contains digits (names don't have numbers)
+  if (/\d/.test(value)) {
     adjustment -= 20;
   }
 
@@ -780,22 +949,43 @@ export function extractName(
     console.log(`[extractName] Total candidates after transcript: ${allCandidates.length}`);
   }
   
-  // Step 2: Cross-field validation - penalize candidates that overlap with address
+  // Step 2: Cross-field validation - AGGRESSIVELY penalize candidates that overlap with address
+  // This catches cases like "five three La" when address is "53 La Cienega Boulevard"
   if (extractedAddress && extractedAddress !== "Not provided") {
     const addressLower = extractedAddress.toLowerCase();
+    const addressWords = new Set(addressLower.split(/\s+/).filter(w => w.length > 1));
+    
     for (const candidate of allCandidates) {
       const nameLower = candidate.value.toLowerCase();
       const nameWords = nameLower.split(/\s+/);
       
       // Check if name words appear in address (address bleeding)
-      const overlapCount = nameWords.filter(w => 
-        w.length > 2 && addressLower.includes(w)
-      ).length;
+      const overlappingWords = nameWords.filter(w => 
+        w.length > 1 && (addressLower.includes(w) || addressWords.has(w))
+      );
+      const overlapCount = overlappingWords.length;
       
       if (overlapCount > 0) {
-        const penalty = overlapCount * 20;
-        console.log(`[extractName] Cross-field penalty: "${candidate.value}" overlaps with address, -${penalty}`);
-        candidate.score -= penalty;
+        // Heavy penalty: -50 per overlapping word
+        // If most words overlap, this is almost certainly address bleeding
+        const overlapRatio = overlapCount / nameWords.length;
+        const basePenalty = overlapCount * 50;
+        const ratioPenalty = overlapRatio > 0.5 ? 100 : 0; // Extra penalty if majority overlaps
+        const totalPenalty = basePenalty + ratioPenalty;
+        
+        console.log(`[extractName] Cross-field: "${candidate.value}" overlaps with address (${overlappingWords.join(", ")}), -${totalPenalty}`);
+        candidate.score -= totalPenalty;
+      }
+      
+      // Additional check: if name contains number words and address contains numbers
+      // This catches "five three" when address starts with "53"
+      const nameHasNumberWords = nameWords.some(w => 
+        /^(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)$/i.test(w)
+      );
+      const addressHasDigits = /\d/.test(extractedAddress);
+      if (nameHasNumberWords && addressHasDigits) {
+        console.log(`[extractName] Cross-field: "${candidate.value}" has number words, address has digits, -60`);
+        candidate.score -= 60;
       }
     }
   }
