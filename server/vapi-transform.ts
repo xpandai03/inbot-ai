@@ -83,20 +83,29 @@ export function isEndOfCallReport(payload: unknown): payload is VapiWebhookPaylo
 /**
  * Clean transcript text for better extraction accuracy
  * Removes hesitation markers, filler words, and speech artifacts
+ * Supports English and Spanish filler words (Phase 1 Spanish Hardening)
  *
  * Examples:
  *   "uh one two three four Main Street" → "one two three four Main Street"
  *   "I... um... live at 123 Oak" → "I live at 123 Oak"
  *   "my name is... uh... John" → "my name is John"
+ *   "eh pues me llamo Carlos" → "me llamo Carlos"
+ *   "este... vivo en la calle Oak" → "vivo en la calle Oak"
  */
 export function cleanTranscriptForExtraction(text: string): string {
   if (!text) return text;
 
   let cleaned = text;
 
-  // Remove filler words at word boundaries (preserve in middle of words)
+  // Remove English filler words at word boundaries (preserve in middle of words)
   // \b ensures we don't match "thumb" when looking for "um"
   cleaned = cleaned.replace(/\b(uh|um|er|ah|eh|hmm|hm|mm)\b/gi, " ");
+
+  // Remove Spanish filler words (Phase 1 Spanish Hardening)
+  // Common Spanish hesitation markers and discourse fillers
+  // Note: "bueno" at sentence start is a filler, but can be meaningful mid-sentence
+  // Using word boundary to preserve when it's part of a phrase
+  cleaned = cleaned.replace(/\b(este|pues|bueno|entonces|o sea|a ver|mira|oye|verdad|sabes)\b/gi, " ");
 
   // Remove ellipses (multiple dots) → single space
   cleaned = cleaned.replace(/\.{2,}/g, " ");
@@ -160,12 +169,14 @@ const IGNORE_WORDS = new Set([
 
 /**
  * Check if a word looks like a valid name component
+ * Supports English and Spanish accented characters (á é í ó ú ñ Á É Í Ó Ú Ñ)
  */
 function isValidNameWord(word: string): boolean {
   if (!word || word.length < 2) return false;
   if (IGNORE_WORDS.has(word.toLowerCase())) return false;
-  // Must start with a letter and contain only letters/hyphens
-  return /^[A-Za-z][A-Za-z'-]*$/.test(word);
+  // Must start with a letter and contain only letters/hyphens/accents
+  // Unicode range \u00C0-\u00FF covers Latin-1 Supplement (accented chars)
+  return /^[A-Za-z\u00C0-\u00FF][A-Za-z\u00C0-\u00FF'-]*$/.test(word);
 }
 
 // ============================================================
@@ -176,7 +187,9 @@ function isValidNameWord(word: string): boolean {
 // ============================================================
 
 // Patterns that indicate a verb phrase, not a name
+// Includes English and Spanish verb forms (Phase 1 Spanish Hardening)
 const VERB_PHRASE_PATTERNS = [
+  // English verb phrases
   /^calling\b/i,
   /^reporting\b/i,
   /^looking\b/i,
@@ -195,10 +208,26 @@ const VERB_PHRASE_PATTERNS = [
   /^making\b/i,
   /^having\b/i,
   /^needing\b/i,
+  // Spanish verb phrases (gerund forms "-ando"/"-iendo" = English "-ing")
+  /^llamando\b/i,     // calling
+  /^reportando\b/i,   // reporting
+  /^buscando\b/i,     // looking for
+  /^tratando\b/i,     // trying
+  /^preguntando\b/i,  // asking
+  /^esperando\b/i,    // hoping/waiting
+  /^revisando\b/i,    // checking
+  /^contactando\b/i,  // contacting
+  /^teniendo\b/i,     // having
+  /^necesitando\b/i,  // needing
+  /^queriendo\b/i,    // wanting
+  /^pidiendo\b/i,     // requesting
+  /^hablando\b/i,     // speaking/talking
 ];
 
 // Common phrase patterns that are definitely not names
+// Includes English and Spanish phrases (Phase 1 Spanish Hardening)
 const NON_NAME_PHRASE_PATTERNS = [
+  // English phrases
   /^calling\s+(about|because|on|to|for|regarding|in|from)/i,
   /^calling\s+on\s+reference/i,
   /^calling\s+on\s+behalf/i,
@@ -215,10 +244,23 @@ const NON_NAME_PHRASE_PATTERNS = [
   /^about\s+(a|the|my|this|that)/i,
   /^about$/i,
   /^soda$/i,
-  /^snow$/i,
   /^help$/i,
   /^here\s+(to|about|for)/i,
   /^\w+ing\s+about\s+\w+/i,  // Catches "texting about snow", "calling about issue", etc.
+  // Spanish non-name phrases (Phase 1 Spanish Hardening)
+  /^llamando\s+(para|por|sobre|porque)/i,  // calling about/for/because
+  /^es\s+(un|una|el|la|mi)/i,              // it's a/the/my
+  /^el\s+(bache|problema|asunto|poste)/i,  // the pothole/problem/issue/post
+  /^la\s+(calle|luz|basura|factura)/i,     // the street/light/trash/bill
+  /^mi\s+(calle|casa|problema|dirección)/i, // my street/house/problem/address
+  /^un\s+(bache|problema|asunto)/i,        // a pothole/problem/issue
+  /^una\s+(luz|calle)/i,                   // a light/street
+  /^solo\s+(llamando|quería|preguntando)/i, // just calling/wanted/asking
+  /^aquí\s+(para|por)/i,                   // here for
+  /^tengo\s+(un|una|problema)/i,           // I have a/problem
+  /^hay\s+(un|una)/i,                      // there is a
+  /^\w+ando\s+(sobre|por|para)\s+\w+/i,    // Spanish gerund patterns "-ando sobre/por/para"
+  /^\w+iendo\s+(sobre|por|para)\s+\w+/i,   // Spanish gerund patterns "-iendo sobre/por/para"
 ];
 
 /**
@@ -274,6 +316,8 @@ export function validateExtractedName(name: string): string | null {
 
   // Single-word check: reject if it's a common English word that's unlikely to be a name
   // This catches transcription errors like "soda", "snow", "about", etc.
+  // NOTE: Some words that are common English words ARE valid Spanish names (e.g., "Luz", "Rosa", "Cruz", "Mar")
+  // These are handled by the VALID_SPANISH_NAMES set below
   const COMMON_NON_NAME_WORDS = new Set([
     // Common nouns
     "soda", "snow", "water", "phone", "help", "issue", "problem", "street",
@@ -287,13 +331,45 @@ export function validateExtractedName(name: string): string | null {
     // Common verbs (base form)
     "help", "call", "text", "send", "fix", "check", "look", "find", "tell",
     // Food/drink items (often misheard)
-    "soda", "coffee", "tea", "water", "food", "pizza", "burger",
-    // Weather words
-    "snow", "rain", "wind", "cold", "hot", "warm", "sunny",
+    "soda", "coffee", "tea", "food", "pizza", "burger",
+    // Weather words - REMOVED "snow" as it could be a surname
+    "rain", "wind", "cold", "hot", "warm", "sunny",
     // Question words
     "what", "where", "when", "why", "how", "who", "which",
   ]);
-  
+
+  // Valid Spanish names that might look like common English words
+  // These should NOT be rejected even though they appear in word lists
+  // Phase 1 Spanish Hardening: Allow legitimate Spanish given names
+  const VALID_SPANISH_NAMES = new Set([
+    "luz",      // Light (common female name)
+    "rosa",     // Rose (common female name)
+    "cruz",     // Cross (common surname, also male name)
+    "mar",      // Sea (female name)
+    "sol",      // Sun (female name)
+    "cielo",    // Sky (female name)
+    "paz",      // Peace (female name)
+    "angel",    // Angel (male name, also "ángel")
+    "jesus",    // Jesus (male name, also "jesús")
+    "dolores",  // Pains/Sorrows (female name)
+    "pilar",    // Pillar (female name)
+    "rocio",    // Dew (female name, also "rocío")
+    "mercedes", // Mercies (female name)
+    "consuelo", // Consolation (female name)
+    "esperanza",// Hope (female name)
+    "guadalupe",// Place name (female name)
+    "trinidad", // Trinity (female name)
+    "santos",   // Saints (male name)
+    "reyes",    // Kings (surname)
+    "flores",   // Flowers (surname)
+  ]);
+
+  // Check if it's a valid Spanish name before rejecting
+  if (words.length === 1 && VALID_SPANISH_NAMES.has(words[0])) {
+    console.log(`[validate-name] ACCEPTED (valid Spanish name): "${trimmed}"`);
+    return trimmed;
+  }
+
   if (words.length === 1 && COMMON_NON_NAME_WORDS.has(words[0])) {
     console.log(`[validate-name] REJECTED (common non-name word): "${trimmed}"`);
     return null;
@@ -362,20 +438,38 @@ export function validateExtractedAddress(address: string): string | null {
   return trimmed;
 }
 
+// Character class for name matching (English + Spanish accented characters)
+// Covers: A-Z, a-z, and Latin-1 Supplement accented chars (á é í ó ú ñ Á É Í Ó Ú Ñ etc.)
+const NAME_CHAR_CLASS = "[A-Za-z\\u00C0-\\u00FF]";
+const NAME_WORD_PATTERN = `${NAME_CHAR_CLASS}${NAME_CHAR_CLASS}*(?:'|-)?${NAME_CHAR_CLASS}*`;
+
 /**
  * Extract caller name from text using multiple patterns
+ * Supports English and Spanish name trigger phrases
  * Returns { name, source } for logging
  */
 function extractNameFromText(text: string): { name: string | null; pattern: string } {
   if (!text) return { name: null, pattern: "empty" };
 
   // Pattern 1: Explicit name phrases (highest confidence)
+  // Includes both English and Spanish triggers
   const explicitPatterns = [
-    { regex: /(?:my name is|name is)\s+([A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,2})/i, name: "my name is" },
-    { regex: /(?:i'm|i am)\s+([A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,2})/i, name: "i'm" },
-    { regex: /(?:this is)\s+([A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,2})/i, name: "this is" },
-    { regex: /(?:it's|it is)\s+([A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,2})/i, name: "it's" },
-    { regex: /(?:yeah,?\s*)?(?:it's|it is)\s+([A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,2})/i, name: "yeah it's" },
+    // English patterns
+    { regex: new RegExp(`(?:my name is|name is)\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "i"), name: "my name is" },
+    { regex: new RegExp(`(?:i'm|i am)\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "i"), name: "i'm" },
+    { regex: new RegExp(`(?:this is)\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "i"), name: "this is" },
+    { regex: new RegExp(`(?:it's|it is)\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "i"), name: "it's" },
+    { regex: new RegExp(`(?:yeah,?\\s*)?(?:it's|it is)\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "i"), name: "yeah it's" },
+    // Spanish patterns (Phase 1 Spanish Hardening)
+    // "me llamo Juan García" → "Juan García"
+    { regex: new RegExp(`(?:me llamo)\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "i"), name: "me llamo" },
+    // "mi nombre es María" → "María"
+    { regex: new RegExp(`(?:mi nombre es)\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "i"), name: "mi nombre es" },
+    // "soy Carlos Rodríguez" → "Carlos Rodríguez"
+    // Note: "soy" can also mean "I am [adjective]" so we validate the captured text
+    { regex: new RegExp(`(?:soy)\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "i"), name: "soy" },
+    // "habla Juan" / "le habla María" → extract name after "habla"
+    { regex: new RegExp(`(?:le\\s+)?habla\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "i"), name: "habla" },
   ];
 
   for (const { regex, name: patternName } of explicitPatterns) {
@@ -392,13 +486,16 @@ function extractNameFromText(text: string): { name: string | null; pattern: stri
   // Pattern 2: Bare name anywhere in text (e.g., "Customer: Johnny Snow. Agent:...")
   // Look for 1-3 capitalized words followed by a period or sentence break
   // Use word boundary to avoid matching mid-sentence
+  // Supports accented characters for Spanish names (e.g., "García", "Rodríguez")
+  const UPPER_CHAR = "[A-Z\\u00C0-\\u00D6\\u00D8-\\u00DE]"; // Uppercase + accented uppercase
+  const LOWER_CHAR = "[a-z\\u00DF-\\u00F6\\u00F8-\\u00FF]"; // Lowercase + accented lowercase
   const bareNamePatterns = [
-    // After "Customer:" or similar speaker labels
-    /(?:Customer|Caller|User|Speaker):\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})[.,]/,
+    // After "Customer:" or similar speaker labels (English + Spanish)
+    new RegExp(`(?:Customer|Caller|User|Speaker|Cliente|Usuario):\\s*(${UPPER_CHAR}${LOWER_CHAR}+(?:\\s+${UPPER_CHAR}${LOWER_CHAR}+){0,2})[.,]`),
     // At start of text
-    /^([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})[.,]/,
+    new RegExp(`^(${UPPER_CHAR}${LOWER_CHAR}+(?:\\s+${UPPER_CHAR}${LOWER_CHAR}+){0,2})[.,]`),
     // After newline or double space
-    /(?:\n|  )([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})[.,]/,
+    new RegExp(`(?:\\n|  )(${UPPER_CHAR}${LOWER_CHAR}+(?:\\s+${UPPER_CHAR}${LOWER_CHAR}+){0,2})[.,]`),
   ];
 
   for (const pattern of bareNamePatterns) {
@@ -454,11 +551,17 @@ export function extractName(messages: VapiMessage[], transcript?: string): { nam
   return { name: "Unknown Caller", source: "default" };
 }
 
-// Street type suffixes
-const STREET_TYPES = "Street|St|Avenue|Ave|Drive|Dr|Road|Rd|Boulevard|Blvd|Lane|Ln|Way|Court|Ct|Place|Pl|Circle|Cir|Terrace|Ter|Trail|Trl|Parkway|Pkwy|Highway|Hwy";
+// Street type suffixes (English and Spanish)
+// Phase 1 Spanish Hardening: Added Spanish street types
+const STREET_TYPES_ENGLISH = "Street|St|Avenue|Ave|Drive|Dr|Road|Rd|Boulevard|Blvd|Lane|Ln|Way|Court|Ct|Place|Pl|Circle|Cir|Terrace|Ter|Trail|Trl|Parkway|Pkwy|Highway|Hwy";
+const STREET_TYPES_SPANISH = "Calle|Avenida|Av|Pasaje|Camino|Carretera|Plaza|Callejón|Paseo|Bulevar|Autopista|Vereda|Sendero";
+const STREET_TYPES = `${STREET_TYPES_ENGLISH}|${STREET_TYPES_SPANISH}`;
 
-// Spoken number words
-const SPOKEN_NUMBERS = "zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand";
+// Spoken number words (English and Spanish)
+// Phase 1 Spanish Hardening: Added Spanish number words
+const SPOKEN_NUMBERS_ENGLISH = "zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand";
+const SPOKEN_NUMBERS_SPANISH = "cero|uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce|trece|catorce|quince|dieciséis|dieciseis|diecisiete|dieciocho|diecinueve|veinte|veintiuno|veintidos|veintidós|veintitrés|veintitres|veinticuatro|veinticinco|veintiseis|veintiséis|veintisiete|veintiocho|veintinueve|treinta|cuarenta|cincuenta|sesenta|setenta|ochenta|noventa|cien|ciento|mil";
+const SPOKEN_NUMBERS = `${SPOKEN_NUMBERS_ENGLISH}|${SPOKEN_NUMBERS_SPANISH}`;
 
 // ============================================================
 // SPOKEN NUMBER → DIGIT NORMALIZATION
@@ -468,42 +571,78 @@ const SPOKEN_NUMBERS = "zero|one|two|three|four|five|six|seven|eight|nine|ten|el
 // ============================================================
 
 // Basic number words → digits (0-19)
+// Phase 1 Spanish Hardening: Added Spanish number words
 const WORD_TO_DIGIT: Record<string, number> = {
+  // English
   zero: 0, oh: 0, o: 0,
   one: 1, two: 2, three: 3, four: 4, five: 5,
   six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
   eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15,
   sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19,
+  // Spanish basic (0-9)
+  cero: 0,
+  uno: 1, una: 1,
+  dos: 2, tres: 3, cuatro: 4, cinco: 5,
+  seis: 6, siete: 7, ocho: 8, nueve: 9,
+  // Spanish 10-19
+  diez: 10, once: 11, doce: 12, trece: 13, catorce: 14, quince: 15,
+  dieciséis: 16, dieciseis: 16, diecisiete: 17, dieciocho: 18, diecinueve: 19,
+  // Spanish 20-29 (special compound forms)
+  veintiuno: 21, veintidós: 22, veintidos: 22, veintitrés: 23, veintitres: 23,
+  veinticuatro: 24, veinticinco: 25, veintiséis: 26, veintiseis: 26,
+  veintisiete: 27, veintiocho: 28, veintinueve: 29,
 };
 
 // Tens words → base value
+// Phase 1 Spanish Hardening: Added Spanish tens
 const TENS_WORDS: Record<string, number> = {
+  // English
   twenty: 20, thirty: 30, forty: 40, fifty: 50,
   sixty: 60, seventy: 70, eighty: 80, ninety: 90,
+  // Spanish
+  veinte: 20, treinta: 30, cuarenta: 40, cincuenta: 50,
+  sesenta: 60, setenta: 70, ochenta: 80, noventa: 90,
 };
 
 // Multiplier words
+// Phase 1 Spanish Hardening: Added Spanish multipliers
 const MULTIPLIERS: Record<string, number> = {
+  // English
   hundred: 100,
   thousand: 1000,
+  // Spanish
+  cien: 100,    // "cien" = exactly 100
+  ciento: 100,  // "ciento" = 100 when combined (e.g., "ciento veinte" = 120)
+  mil: 1000,
 };
 
 // Street type keywords (stop parsing when we hit these)
+// Phase 1 Spanish Hardening: Added Spanish street types and common words
 const STREET_KEYWORDS = new Set([
+  // English street types
   "street", "st", "avenue", "ave", "drive", "dr", "road", "rd",
   "boulevard", "blvd", "lane", "ln", "way", "court", "ct",
   "place", "pl", "circle", "cir", "terrace", "ter", "trail", "trl",
   "parkway", "pkwy", "highway", "hwy",
-  // Also stop at common street name words
+  // Spanish street types
+  "calle", "avenida", "av", "pasaje", "camino", "carretera", "plaza",
+  "callejón", "callejon", "paseo", "bulevar", "autopista", "vereda", "sendero",
+  // English common street name words
   "main", "oak", "maple", "elm", "pine", "cedar", "first", "second",
   "third", "fourth", "fifth", "north", "south", "east", "west",
+  // Spanish common street name words
+  "norte", "sur", "este", "oeste", "principal", "central", "mayor",
+  "primero", "primera", "segundo", "segunda", "tercero", "tercera",
 ]);
 
 /**
  * Check if a word is a number word
+ * Phase 1 Spanish Hardening: Also recognizes "y" (Spanish "and") as part of numbers
  */
 function isNumberWord(word: string): boolean {
   const lower = word.toLowerCase();
+  // "y" is Spanish "and" used in numbers like "veinte y dos" (22)
+  if (lower === "y") return true;
   return (
     WORD_TO_DIGIT[lower] !== undefined ||
     TENS_WORDS[lower] !== undefined ||
@@ -514,9 +653,14 @@ function isNumberWord(word: string): boolean {
 /**
  * Parse a sequence of number words into a single number
  * Handles: "eleven twenty two" → 1122, "five four eight four" → 5484
+ * Phase 1 Spanish Hardening: Also handles "veinte y dos" → 22
  */
 function parseSpokenNumber(words: string[]): number | null {
   if (words.length === 0) return null;
+
+  // Filter out Spanish "y" (and) conjunction - it's just a connector
+  // e.g., "treinta y cinco" → ["treinta", "cinco"] → 35
+  words = words.filter(w => w.toLowerCase() !== "y");
 
   // Strategy 1: Try compound number interpretation (e.g., "eleven twenty two" = 11*100 + 22 = 1122)
   // Strategy 2: Try digit-by-digit interpretation (e.g., "five four eight four" = 5484)
@@ -555,11 +699,13 @@ function parseSpokenNumber(words: string[]): number | null {
       current += WORD_TO_DIGIT[lower];
     } else if (TENS_WORDS[lower] !== undefined) {
       current += TENS_WORDS[lower];
-    } else if (lower === "hundred") {
-      current *= 100;
+    } else if (lower === "hundred" || lower === "cien" || lower === "ciento") {
+      // English "hundred" or Spanish "cien"/"ciento"
+      current = current === 0 ? 100 : current * 100;
       hasHundredOrThousand = true;
-    } else if (lower === "thousand") {
-      current *= 1000;
+    } else if (lower === "thousand" || lower === "mil") {
+      // English "thousand" or Spanish "mil"
+      current = current === 0 ? 1000 : current * 1000;
       hasHundredOrThousand = true;
     }
   }
@@ -568,37 +714,45 @@ function parseSpokenNumber(words: string[]): number | null {
 
   // Special case: "eleven twenty two" should be 1122, not 33
   // If we have multiple "compound" groups without hundred/thousand, treat as digit groups
+  // Logic: "eleven" = group 1 (11), "twenty two" = group 2 (22) → concatenate "1122"
   if (!hasHundredOrThousand && words.length >= 2) {
     // Try to detect digit-group pattern: "eleven twenty two" = "11" + "22" = 1122
     const groups: number[] = [];
     let groupCurrent = 0;
-    let inGroup = false;
+    let lastWasTens = false; // Track if last token was a tens word (20, 30, etc.)
 
     for (const word of words) {
       const lower = word.toLowerCase();
 
       if (WORD_TO_DIGIT[lower] !== undefined) {
-        if (!inGroup) {
-          groupCurrent = WORD_TO_DIGIT[lower];
-          inGroup = true;
-        } else {
-          // If we already have a base number and this is a single digit, it's a new group
+        const digitVal = WORD_TO_DIGIT[lower];
+
+        // If last was a tens word (20-90) and this is a ones digit (1-9), combine them
+        // e.g., "twenty" (20) + "two" (2) = 22
+        if (lastWasTens && digitVal >= 1 && digitVal <= 9) {
+          groupCurrent += digitVal;
+          lastWasTens = false;
+        } else if (groupCurrent > 0) {
+          // Start a new group
           groups.push(groupCurrent);
-          groupCurrent = WORD_TO_DIGIT[lower];
+          groupCurrent = digitVal;
+          lastWasTens = false;
+        } else {
+          // First number in sequence
+          groupCurrent = digitVal;
+          lastWasTens = false;
         }
       } else if (TENS_WORDS[lower] !== undefined) {
-        if (inGroup && groupCurrent > 0) {
-          // Previous number + this tens = new group
+        if (groupCurrent > 0) {
+          // Push previous group, start new group with tens
           groups.push(groupCurrent);
-          groupCurrent = TENS_WORDS[lower];
-        } else {
-          groupCurrent = TENS_WORDS[lower];
-          inGroup = true;
         }
+        groupCurrent = TENS_WORDS[lower];
+        lastWasTens = true; // Mark that we just saw a tens word
       }
     }
 
-    if (inGroup) {
+    if (groupCurrent > 0) {
       groups.push(groupCurrent);
     }
 
@@ -695,9 +849,19 @@ function extractAddressFromText(text: string): { address: string | null; pattern
   }
 
   // Pattern 3: "address is..." or "at..." followed by address-like text
+  // Phase 1 Spanish Hardening: Added Spanish address prefix patterns
   const prefixPatterns = [
+    // English prefixes with street number
     /(?:address is|my address is|i(?:'m| am) at|i live at|located at)\s+(\d{1,6}\s+[\w\s]+(?:Street|St|Avenue|Ave|Drive|Dr|Road|Rd|Boulevard|Blvd|Lane|Ln|Way|Court|Ct|Place|Pl|Circle|Cir))/i,
+    // English prefixes without street number
     /(?:address is|my address is|i(?:'m| am) at|i live at|located at)\s+([\w\s]+(?:Street|St|Avenue|Ave|Drive|Dr|Road|Rd|Boulevard|Blvd|Lane|Ln|Way|Court|Ct|Place|Pl|Circle|Cir))/i,
+    // Spanish prefixes: "vivo en la Calle 5 de Marzo 123" or "mi dirección es Avenida Central 456"
+    // Captures: Calle/Avenida + name + optional number
+    /(?:vivo en(?: la| el)?|mi direcci[oó]n es|estoy en(?: la| el)?|queda en(?: la| el)?)\s+((?:Calle|Avenida|Av|Pasaje|Camino|Carretera|Plaza|Callej[oó]n|Paseo|Bulevar)\s+[\w\s]+?\s*\d{1,6})/i,
+    // Spanish: number first "vivo en el 123 de la Calle Main"
+    /(?:vivo en(?: la| el)?|mi direcci[oó]n es|estoy en(?: la| el)?)\s+(?:el\s+)?(\d{1,6}\s+(?:de\s+la\s+)?(?:Calle|Avenida|Av|Pasaje|Camino|Carretera|Plaza)\s+[\w\s]+)/i,
+    // Spanish: "en la calle Oak" without number (lower confidence)
+    /(?:en la|en el)\s+((?:Calle|Avenida|Av|Pasaje|Camino)\s+[\w\s]+)/i,
   ];
 
   for (const pattern of prefixPatterns) {
@@ -708,8 +872,9 @@ function extractAddressFromText(text: string): { address: string | null; pattern
   }
 
   // Pattern 4: Any text ending in a street type (less confident)
+  // Supports accented characters for Spanish street names
   const anyStreetPattern = new RegExp(
-    `([A-Za-z0-9][A-Za-z0-9\\s'-]{3,40}\\s+(?:${STREET_TYPES}))(?:[.,\\s]|$)`,
+    `([A-Za-z0-9\\u00C0-\\u00FF][A-Za-z0-9\\u00C0-\\u00FF\\s'-]{3,40}\\s+(?:${STREET_TYPES}))(?:[.,\\s]|$)`,
     "i"
   );
   const anyMatch = text.match(anyStreetPattern);
@@ -718,6 +883,17 @@ function extractAddressFromText(text: string): { address: string | null; pattern
     // Must have at least 2 words
     if (candidate.split(/\s+/).length >= 2) {
       return { address: candidate, pattern: "any-street" };
+    }
+  }
+
+  // Pattern 4b: Spanish address format "Calle X número Y" or "Calle X #Y"
+  // Example: "Calle 5 de Marzo 123", "Avenida Central número 456"
+  const spanishAddressPattern = /(?:Calle|Avenida|Av|Pasaje|Camino|Carretera|Plaza|Callej[oó]n|Paseo|Bulevar)\s+[\w\s]+?(?:\s+(?:n[uú]mero|#|no\.?)?\s*\d{1,6}|\d{1,6})/i;
+  const spanishMatch = text.match(spanishAddressPattern);
+  if (spanishMatch && spanishMatch[0]) {
+    const candidate = spanishMatch[0].replace(/[.,!?]$/, "").trim();
+    if (candidate.length >= 10) { // Reasonable minimum for Spanish address
+      return { address: candidate, pattern: "spanish-format" };
     }
   }
 
@@ -804,6 +980,7 @@ export function buildRawIssueText(messages: VapiMessage[]): string {
 
 /**
  * Detect language from transcript (simple heuristic)
+ * Phase 1 Spanish Hardening: Expanded Spanish indicators
  */
 export function detectLanguage(messages: VapiMessage[]): string {
   const userText = messages
@@ -811,8 +988,9 @@ export function detectLanguage(messages: VapiMessage[]): string {
     .map(m => m.message)
     .join(" ");
 
-  // Simple Spanish detection - check for common Spanish words
-  const spanishIndicators = /\b(hola|gracias|por favor|calle|donde|necesito|problema|ayuda)\b/i;
+  // Expanded Spanish detection - check for common Spanish words and patterns
+  // Includes greetings, common verbs, articles, and domain-specific words
+  const spanishIndicators = /\b(hola|gracias|por favor|calle|donde|necesito|problema|ayuda|buenos d[ií]as|buenas tardes|buenas noches|me llamo|mi nombre|tengo|hay|est[aá]|quiero|puedo|bache|basura|factura|luz|agua|el|la|los|las|un|una|unos|unas|que|como|cuando|porque|pero|para|con|sin|sobre|hasta|desde|entre)\b/i;
   if (spanishIndicators.test(userText)) {
     return "Spanish";
   }

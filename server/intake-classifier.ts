@@ -150,9 +150,10 @@ async function classifyWithLLM(input: ClassificationInput): Promise<Classificati
 // ============================================================
 
 // Intent patterns with context (prevents "water pooling in pothole" → Water/Utilities)
+// Phase 1 Spanish Hardening: Added Spanish keyword patterns
 const INTENT_PATTERNS: Array<{ pattern: RegExp; intent: string; priority: number }> = [
   // POTHOLE / ROAD DAMAGE - High priority, very specific
-  // Direct mentions of road damage
+  // Direct mentions of road damage (English)
   { pattern: /pothole/i, intent: "Pothole / Road Damage", priority: 100 },
   { pattern: /road\s*(damage|repair|broken|crack|issue|problem|condition)/i, intent: "Pothole / Road Damage", priority: 95 },
   { pattern: /street\s*(damage|broken|crack|condition|repair)/i, intent: "Pothole / Road Damage", priority: 95 },
@@ -160,8 +161,15 @@ const INTENT_PATTERNS: Array<{ pattern: RegExp; intent: string; priority: number
   { pattern: /crater\s*(in|on)\s*(the\s*)?(road|street)/i, intent: "Pothole / Road Damage", priority: 90 },
   { pattern: /bump\s*(in|on)\s*(the\s*)?(road|street)/i, intent: "Pothole / Road Damage", priority: 85 },
   { pattern: /hole\s*(in|on)\s*(the\s*)?(road|street|pavement)/i, intent: "Pothole / Road Damage", priority: 85 },
+  // Spanish: pothole / road damage
+  { pattern: /bache/i, intent: "Pothole / Road Damage", priority: 100 },  // pothole
+  { pattern: /hoyo\s*(en\s*)?(la\s*)?(calle|carretera|camino)/i, intent: "Pothole / Road Damage", priority: 95 },  // hole in the street
+  { pattern: /calle\s*(dañada|rota|en\s*mal\s*estado)/i, intent: "Pothole / Road Damage", priority: 90 },  // damaged/broken street
+  { pattern: /pavimento\s*(dañado|roto|agrietado)/i, intent: "Pothole / Road Damage", priority: 90 },  // damaged pavement
+  { pattern: /carretera\s*(dañada|en\s*mal\s*estado)/i, intent: "Pothole / Road Damage", priority: 85 },  // damaged road
 
   // STREETLIGHT ISSUE - Specific to lighting
+  // English
   { pattern: /street\s*light/i, intent: "Streetlight Issue", priority: 90 },
   { pattern: /lamp\s*post/i, intent: "Streetlight Issue", priority: 90 },
   { pattern: /light\s*(pole|post)/i, intent: "Streetlight Issue", priority: 90 },
@@ -169,9 +177,18 @@ const INTENT_PATTERNS: Array<{ pattern: RegExp; intent: string; priority: number
   { pattern: /dark\s*street/i, intent: "Streetlight Issue", priority: 80 },
   { pattern: /(street|road|sidewalk)\s*(is\s*)?dark/i, intent: "Streetlight Issue", priority: 80 },
   { pattern: /no\s*(street\s*)?light/i, intent: "Streetlight Issue", priority: 75 },
+  // Spanish: streetlight
+  { pattern: /luz\s*(de\s*(la\s*)?)?calle/i, intent: "Streetlight Issue", priority: 90 },  // streetlight
+  { pattern: /poste\s*(de\s*)?luz/i, intent: "Streetlight Issue", priority: 90 },  // light post
+  { pattern: /l[aá]mpara\s*(de\s*)?(la\s*)?(calle|poste)/i, intent: "Streetlight Issue", priority: 90 },  // street lamp
+  { pattern: /alumbrado\s*(p[uú]blico)?/i, intent: "Streetlight Issue", priority: 85 },  // public lighting
+  { pattern: /farol/i, intent: "Streetlight Issue", priority: 85 },  // lamp/lantern
+  { pattern: /calle\s*(est[aá]\s*)?(oscura|sin\s*luz)/i, intent: "Streetlight Issue", priority: 80 },  // dark street
+  { pattern: /no\s*hay\s*luz/i, intent: "Streetlight Issue", priority: 75 },  // no light
 
   // WATER / UTILITIES - Require utility-specific context words
   // Prevents "water pooling" from matching (pooling is not a utility issue word)
+  // English
   { pattern: /water\s*(main|line|pipe|meter|pressure|service|shut|leak|break|burst)/i, intent: "Water / Utilities", priority: 90 },
   { pattern: /(fire\s*)?hydrant/i, intent: "Water / Utilities", priority: 90 },
   { pattern: /sewer\s*(line|backup|overflow|smell|issue|problem)/i, intent: "Water / Utilities", priority: 90 },
@@ -181,8 +198,17 @@ const INTENT_PATTERNS: Array<{ pattern: RegExp; intent: string; priority: number
   { pattern: /(storm\s*)?drain\s*(clog|block|backup|overflow)/i, intent: "Water / Utilities", priority: 80 },
   { pattern: /flood(ing|ed)?\s*(from|in|my)/i, intent: "Water / Utilities", priority: 75 },
   { pattern: /no\s*(water|power|electricity|gas)/i, intent: "Water / Utilities", priority: 85 },
+  // Spanish: water/utilities
+  { pattern: /tuber[ií]a\s*(rota|da[ñn]ada|con\s*fuga)/i, intent: "Water / Utilities", priority: 90 },  // broken/leaking pipe
+  { pattern: /fuga\s*(de\s*)?(agua|gas)/i, intent: "Water / Utilities", priority: 90 },  // water/gas leak
+  { pattern: /alcantarilla/i, intent: "Water / Utilities", priority: 90 },  // sewer
+  { pattern: /hidrante/i, intent: "Water / Utilities", priority: 90 },  // hydrant
+  { pattern: /no\s*hay\s*(agua|luz|gas)/i, intent: "Water / Utilities", priority: 85 },  // no water/power/gas
+  { pattern: /medidor\s*(de\s*)?(agua|luz|gas)/i, intent: "Water / Utilities", priority: 85 },  // water/electric/gas meter
+  { pattern: /corte\s*(de\s*)?(agua|luz|gas)/i, intent: "Water / Utilities", priority: 85 },  // service cut
 
   // TRASH / SANITATION - Specific to waste collection
+  // English
   { pattern: /trash\s*(pickup|collection|not\s*picked|missed|schedule)/i, intent: "Trash / Sanitation", priority: 90 },
   { pattern: /garbage\s*(pickup|collection|not\s*picked|missed|truck)/i, intent: "Trash / Sanitation", priority: 90 },
   { pattern: /recycl(e|ing)\s*(pickup|bin|container|collection)/i, intent: "Trash / Sanitation", priority: 90 },
@@ -191,8 +217,18 @@ const INTENT_PATTERNS: Array<{ pattern: RegExp; intent: string; priority: number
   { pattern: /illegal\s*dump/i, intent: "Trash / Sanitation", priority: 85 },
   { pattern: /litter(ing)?\s*(on|in|around)/i, intent: "Trash / Sanitation", priority: 75 },
   { pattern: /bulk\s*(trash|pickup|waste|item)/i, intent: "Trash / Sanitation", priority: 80 },
+  // Spanish: trash/sanitation
+  { pattern: /basura/i, intent: "Trash / Sanitation", priority: 95 },  // trash/garbage
+  { pattern: /recoger\s*(la\s*)?basura/i, intent: "Trash / Sanitation", priority: 90 },  // trash pickup
+  { pattern: /recolecci[oó]n\s*(de\s*)?(basura|desechos)/i, intent: "Trash / Sanitation", priority: 90 },  // trash collection
+  { pattern: /cami[oó]n\s*(de\s*)?(la\s*)?basura/i, intent: "Trash / Sanitation", priority: 90 },  // garbage truck
+  { pattern: /no\s*(pas[oó]|vino)\s*(el\s*)?(cami[oó]n|la\s*basura)/i, intent: "Trash / Sanitation", priority: 90 },  // missed pickup
+  { pattern: /reciclaje/i, intent: "Trash / Sanitation", priority: 90 },  // recycling
+  { pattern: /contenedor\s*(de\s*)?(basura)?/i, intent: "Trash / Sanitation", priority: 85 },  // trash container
+  { pattern: /tiradero\s*ilegal/i, intent: "Trash / Sanitation", priority: 85 },  // illegal dump
 
   // BILLING / PAYMENT - Financial terms with context
+  // English
   { pattern: /(water|utility|trash|tax)\s*bill/i, intent: "Billing / Payment", priority: 90 },
   { pattern: /bill\s*(question|issue|problem|too\s*high|incorrect|wrong)/i, intent: "Billing / Payment", priority: 90 },
   { pattern: /payment\s*(plan|option|issue|problem|arrangement)/i, intent: "Billing / Payment", priority: 90 },
@@ -201,19 +237,37 @@ const INTENT_PATTERNS: Array<{ pattern: RegExp; intent: string; priority: number
   { pattern: /(late|past\s*due)\s*(fee|charge|payment)/i, intent: "Billing / Payment", priority: 85 },
   { pattern: /account\s*(balance|statement|issue)/i, intent: "Billing / Payment", priority: 80 },
   { pattern: /invoice\s*(question|issue|problem)/i, intent: "Billing / Payment", priority: 80 },
+  // Spanish: billing/payment
+  { pattern: /factura/i, intent: "Billing / Payment", priority: 95 },  // bill/invoice
+  { pattern: /recibo\s*(de\s*)?(agua|luz|gas)/i, intent: "Billing / Payment", priority: 90 },  // utility bill
+  { pattern: /pagar\s*(mi\s*)?(factura|recibo|cuenta)/i, intent: "Billing / Payment", priority: 90 },  // pay my bill
+  { pattern: /cuenta\s*(de\s*)?(agua|luz|gas)/i, intent: "Billing / Payment", priority: 90 },  // utility account
+  { pattern: /cobro\s*(excesivo|incorrecto|alto)/i, intent: "Billing / Payment", priority: 85 },  // excessive/incorrect charge
+  { pattern: /plan\s*(de\s*)?pago/i, intent: "Billing / Payment", priority: 85 },  // payment plan
+  { pattern: /deuda|adeudo/i, intent: "Billing / Payment", priority: 80 },  // debt/amount owed
 ];
 
 // Department patterns with context
+// Phase 1 Spanish Hardening: Added Spanish keyword patterns
 const DEPARTMENT_PATTERNS: Array<{ pattern: RegExp; department: string; priority: number }> = [
   // PUBLIC WORKS - Infrastructure
+  // English
   { pattern: /pothole|road\s*(damage|repair|issue)|street\s*(damage|repair)/i, department: "Public Works", priority: 100 },
   { pattern: /sidewalk|curb|pavement|asphalt/i, department: "Public Works", priority: 90 },
   { pattern: /street\s*light|lamp\s*post|light\s*pole/i, department: "Public Works", priority: 90 },
   { pattern: /traffic\s*(light|sign|signal)/i, department: "Public Works", priority: 90 },
   { pattern: /storm\s*drain|sewer|water\s*main/i, department: "Public Works", priority: 85 },
   { pattern: /road\s*(sign|marking|line)/i, department: "Public Works", priority: 80 },
+  // Spanish
+  { pattern: /bache|hoyo\s*(en\s*)?(la\s*)?(calle|carretera)/i, department: "Public Works", priority: 100 },  // pothole
+  { pattern: /acera|banqueta|pavimento/i, department: "Public Works", priority: 90 },  // sidewalk/pavement
+  { pattern: /poste\s*(de\s*)?luz|alumbrado/i, department: "Public Works", priority: 90 },  // streetlight
+  { pattern: /sem[aá]foro/i, department: "Public Works", priority: 90 },  // traffic light
+  { pattern: /alcantarilla|drenaje/i, department: "Public Works", priority: 85 },  // sewer/drain
+  { pattern: /se[ñn]al(amiento)?\s*(de\s*)?(tr[aá]nsito|calle)/i, department: "Public Works", priority: 80 },  // traffic sign
 
   // PUBLIC SAFETY - Emergency/safety issues
+  // English
   { pattern: /emergency|911/i, department: "Public Safety", priority: 100 },
   { pattern: /police|crime|theft|break\s*in/i, department: "Public Safety", priority: 95 },
   { pattern: /fire\s*(department|hazard|danger)/i, department: "Public Safety", priority: 95 },
@@ -221,30 +275,58 @@ const DEPARTMENT_PATTERNS: Array<{ pattern: RegExp; department: string; priority
   { pattern: /accident|collision|crash/i, department: "Public Safety", priority: 85 },
   { pattern: /suspicious\s*(person|activity|vehicle)/i, department: "Public Safety", priority: 85 },
   { pattern: /threat|assault|violence/i, department: "Public Safety", priority: 90 },
+  // Spanish
+  { pattern: /emergencia/i, department: "Public Safety", priority: 100 },  // emergency
+  { pattern: /polic[ií]a|robo|asalto/i, department: "Public Safety", priority: 95 },  // police/theft/assault
+  { pattern: /bomberos|incendio/i, department: "Public Safety", priority: 95 },  // firefighters/fire
+  { pattern: /peligro(so)?/i, department: "Public Safety", priority: 90 },  // danger(ous)
+  { pattern: /accidente|choque/i, department: "Public Safety", priority: 85 },  // accident/crash
+  { pattern: /sospechoso/i, department: "Public Safety", priority: 85 },  // suspicious
 
   // FINANCE - Financial matters
+  // English
   { pattern: /(property|city|county)\s*tax/i, department: "Finance", priority: 95 },
   { pattern: /(water|utility|trash)\s*bill/i, department: "Finance", priority: 90 },
   { pattern: /payment\s*(plan|option|arrangement)/i, department: "Finance", priority: 90 },
   { pattern: /permit\s*(fee|application|cost)/i, department: "Finance", priority: 85 },
   { pattern: /license\s*(fee|renewal|cost)/i, department: "Finance", priority: 85 },
   { pattern: /fine|citation|penalty/i, department: "Finance", priority: 80 },
+  // Spanish
+  { pattern: /impuesto|predial/i, department: "Finance", priority: 95 },  // tax/property tax
+  { pattern: /factura|recibo\s*(de\s*)?(agua|luz|gas)/i, department: "Finance", priority: 90 },  // bill/utility receipt
+  { pattern: /plan\s*(de\s*)?pago/i, department: "Finance", priority: 90 },  // payment plan
+  { pattern: /permiso|licencia/i, department: "Finance", priority: 85 },  // permit/license
+  { pattern: /multa|infracci[oó]n/i, department: "Finance", priority: 80 },  // fine/citation
 
   // PARKS & RECREATION - Parks and facilities
+  // English
   { pattern: /park\s*(issue|problem|damage|maintenance)/i, department: "Parks & Recreation", priority: 90 },
   { pattern: /playground\s*(issue|broken|damage|unsafe)/i, department: "Parks & Recreation", priority: 90 },
   { pattern: /recreation\s*(center|facility|program)/i, department: "Parks & Recreation", priority: 90 },
   { pattern: /community\s*(center|pool|facility)/i, department: "Parks & Recreation", priority: 85 },
   { pattern: /trail\s*(issue|damage|maintenance)/i, department: "Parks & Recreation", priority: 80 },
   { pattern: /sports\s*(field|court|facility)/i, department: "Parks & Recreation", priority: 80 },
+  // Spanish
+  { pattern: /parque\s*(problema|da[ñn]o|mantenimiento)/i, department: "Parks & Recreation", priority: 90 },  // park issue
+  { pattern: /juegos\s*(infantiles)?|[aá]rea\s*de\s*juegos/i, department: "Parks & Recreation", priority: 90 },  // playground
+  { pattern: /centro\s*(comunitario|recreativo)/i, department: "Parks & Recreation", priority: 85 },  // community/rec center
+  { pattern: /alberca|piscina/i, department: "Parks & Recreation", priority: 85 },  // pool
+  { pattern: /sendero|vereda/i, department: "Parks & Recreation", priority: 80 },  // trail
 
   // SANITATION - Waste management
+  // English
   { pattern: /trash\s*(pickup|collection|missed)/i, department: "Sanitation", priority: 95 },
   { pattern: /garbage\s*(pickup|collection|truck)/i, department: "Sanitation", priority: 95 },
   { pattern: /recycl(e|ing)\s*(pickup|bin|collection)/i, department: "Sanitation", priority: 95 },
   { pattern: /waste\s*(collection|pickup|management)/i, department: "Sanitation", priority: 90 },
   { pattern: /bulk\s*(pickup|trash|item)/i, department: "Sanitation", priority: 85 },
   { pattern: /dumpster|compost/i, department: "Sanitation", priority: 80 },
+  // Spanish
+  { pattern: /basura|recolecci[oó]n/i, department: "Sanitation", priority: 95 },  // trash/collection
+  { pattern: /cami[oó]n\s*(de\s*)?(la\s*)?basura/i, department: "Sanitation", priority: 95 },  // garbage truck
+  { pattern: /reciclaje/i, department: "Sanitation", priority: 95 },  // recycling
+  { pattern: /contenedor/i, department: "Sanitation", priority: 85 },  // container
+  { pattern: /composta/i, department: "Sanitation", priority: 80 },  // compost
 ];
 
 /**
