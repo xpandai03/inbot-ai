@@ -171,6 +171,22 @@ const INTENT_PATTERNS: Array<{ pattern: RegExp; intent: string; priority: number
   { pattern: /calle\s*(dañada|rota|en\s*mal\s*estado)/i, intent: "Pothole / Road Damage", priority: 90 },  // damaged/broken street
   { pattern: /pavimento\s*(dañado|roto|agrietado)/i, intent: "Pothole / Road Damage", priority: 90 },  // damaged pavement
   { pattern: /carretera\s*(dañada|en\s*mal\s*estado)/i, intent: "Pothole / Road Damage", priority: 85 },  // damaged road
+  
+  // SNOW / WINTER WEATHER (Phase 2 Hardening) - Routes to Pothole / Road Damage (Public Works)
+  // English
+  { pattern: /snow\s*(block|clear|remov|plow)/i, intent: "Pothole / Road Damage", priority: 95 },  // "snow blocking", "snow removal", "snow plow"
+  { pattern: /snow\s*(on|in)\s*(the\s*)?(road|street|sidewalk)/i, intent: "Pothole / Road Damage", priority: 95 },  // "snow on the road"
+  { pattern: /(road|street|sidewalk)\s*(is\s*)?(block|cover|full\s*of)\s*(snow|ice)/i, intent: "Pothole / Road Damage", priority: 95 },  // "street is blocked by snow"
+  { pattern: /ice\s*(on|in)\s*(the\s*)?(road|street|sidewalk)/i, intent: "Pothole / Road Damage", priority: 90 },  // "ice on the road"
+  { pattern: /black\s*ice/i, intent: "Pothole / Road Damage", priority: 95 },  // "black ice"
+  { pattern: /plow(ing)?|salt(ing)?|sand(ing)?/i, intent: "Pothole / Road Damage", priority: 85 },  // road treatment
+  { pattern: /(can'?t|cannot)\s*(drive|get)\s*(through|down|out)/i, intent: "Pothole / Road Damage", priority: 85 },  // "can't drive through"
+  { pattern: /storm\s*(damage|debris)/i, intent: "Pothole / Road Damage", priority: 85 },  // storm damage
+  { pattern: /tree\s*(down|fell|fallen|blocking)/i, intent: "Pothole / Road Damage", priority: 85 },  // fallen tree
+  // Spanish: snow/ice
+  { pattern: /nieve\s*(en\s*)?(la\s*)?(calle|carretera|acera)/i, intent: "Pothole / Road Damage", priority: 95 },  // snow on the road
+  { pattern: /hielo\s*(en\s*)?(la\s*)?(calle|carretera)/i, intent: "Pothole / Road Damage", priority: 90 },  // ice on the road
+  { pattern: /calle\s*(bloqueada|cubierta|tapada)/i, intent: "Pothole / Road Damage", priority: 90 },  // blocked/covered street
 
   // STREETLIGHT ISSUE - Specific to lighting
   // English
@@ -409,6 +425,7 @@ function classifyWithRegex(rawText: string): ClassificationOutput {
 const STRONG_INTENT_KEYWORDS: Array<{ keywords: RegExp[]; intent: string; department: string }> = [
   // Pothole / Road Damage (EXPANDED - Phase 2 Hardening)
   // Must match all the ways callers describe potholes/road issues
+  // Includes snow/ice/weather issues that affect roads
   {
     keywords: [
       /pothole/i,                                           // Direct: "pothole"
@@ -426,6 +443,18 @@ const STRONG_INTENT_KEYWORDS: Array<{ keywords: RegExp[]; intent: string; depart
       /(road|street)\s+needs?\s+(repair|fixing|work)/i,    // "road needs repair"
       /hoyo\s*(en\s*)?(la\s*)?(calle|carretera)/i,         // Spanish: hole in street
       /calle\s*(dañada|rota|en\s*mal\s*estado)/i,          // Spanish: damaged street
+      // Snow/Ice/Weather issues (Phase 2)
+      /snow\s*(block|clear|remov|plow|cover)/i,            // "snow blocking", "snow removal"
+      /snow\s*(on|in)\s*(the\s*)?(road|street|sidewalk)/i, // "snow on the road"
+      /(road|street)\s*(block|cover)\w*\s*(by\s*)?(snow|ice)/i,  // "street blocked by snow"
+      /ice\s*(on|in)\s*(the\s*)?(road|street)/i,           // "ice on the road"
+      /black\s*ice/i,                                       // "black ice"
+      /plow(ing)?|salt(ing)?/i,                            // plowing, salting
+      /(can'?t|cannot)\s*(drive|get)\s*(through|down|out)/i,  // "can't drive through"
+      /tree\s*(down|fell|fallen|blocking)/i,               // "tree blocking road"
+      /storm\s*damage/i,                                    // "storm damage"
+      /nieve/i,                                             // Spanish: snow
+      /hielo/i,                                             // Spanish: ice
     ],
     intent: "Pothole / Road Damage",
     department: "Public Works",
