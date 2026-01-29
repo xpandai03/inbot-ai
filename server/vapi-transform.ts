@@ -861,6 +861,8 @@ const PATTERN_BASE_SCORES: Record<string, number> = {
   "name only response": 200,  // Just "Juliano Estrano" - medium, needs First Last pattern
   "short response": 180,      // "It's Juliano Estrano" / "Just Juliano Estrano"
   "name then continue": 250,  // "Juliano Estrano, I'm calling about..." - higher confidence
+  "name with pause": 220,     // "Juliano Estrano. I need to report..."
+  "i am name": 350,           // "I'm Juliano Estrano" with capitalized First Last
   // Weaker triggers (LOW confidence - should rarely win)
   "it's": 50,          // Kept low - often captures garbage
   "yeah it's": 50,     // Kept low
@@ -868,6 +870,8 @@ const PATTERN_BASE_SCORES: Record<string, number> = {
   // Bare name patterns (VERY LOW confidence - last resort)
   "bare name": 10,     // Decreased from 30
   "bare name label": 15, // Decreased from 35
+  // Capitalized pair fallback (LOW confidence but better than Unknown)
+  "capitalized pair": 100,  // Any "First Last" pattern - needs validation
 };
 
 /**
@@ -923,19 +927,26 @@ function extractAllNameCandidates(text: string, messageIndex: number): NameCandi
     // ============================================================
     // Phase 2 Hardening: RESPONSE TO NAME QUESTION
     // ============================================================
-    // When AI asks "What's your name?" and caller responds with just their name
-    // These patterns look for the name stated right after common AI questions
+    // When AI asks "What's your name?" and caller responds with their name
+    // These patterns look for name patterns in various contexts
     // ============================================================
     
-    // Name stated alone after AI asks (very short message = just the name)
-    // Requires 2+ capitalized words (First Last pattern)
-    { regex: new RegExp(`^(${NAME_WORD_PATTERN}\\s+${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN})?)$`, "gi"), pattern: "name only response" },
+    // Name stated alone (short message = likely just the name)
+    // Allow whitespace/punctuation at start/end
+    { regex: new RegExp(`^\\s*(${NAME_WORD_PATTERN}\\s+${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN})?)\\s*[.,!?]?\\s*$`, "gi"), pattern: "name only response" },
     
-    // "It's [Name]" / "Just [Name]" - short responses
-    { regex: new RegExp(`(?:it'?s|just|only)\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){1,2})`, "gi"), pattern: "short response" },
+    // "It's [Name]" / "Just [Name]" / "Only [Name]" - short responses
+    { regex: new RegExp(`(?:it'?s|just|only|that'?s)\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){1,2})`, "gi"), pattern: "short response" },
     
     // "[Name], and..." / "[Name], I'm calling about..." - name followed by continuation
-    { regex: new RegExp(`^(${NAME_WORD_PATTERN}\\s+${NAME_WORD_PATTERN}),?\\s+(?:and|i'm|i am|calling|here|speaking)`, "gi"), pattern: "name then continue" },
+    { regex: new RegExp(`^\\s*(${NAME_WORD_PATTERN}\\s+${NAME_WORD_PATTERN}),?\\s+(?:and|i'm|i am|calling|here|speaking|i\\s+need|i\\s+want)`, "gi"), pattern: "name then continue" },
+    
+    // "[Name]." or "[Name]," at start (name stated then pause/continuation)
+    { regex: new RegExp(`^\\s*(${NAME_WORD_PATTERN}\\s+${NAME_WORD_PATTERN})[.,]\\s+`, "gi"), pattern: "name with pause" },
+    
+    // "I am [Name]" / "I'm [Name]" when followed by proper name (not verb)
+    // Different from earlier "i'm" pattern - this specifically looks for capitalized First Last
+    { regex: new RegExp(`(?:i'?m|i\\s+am)\\s+([A-Z][a-z]+\\s+[A-Z][a-z]+)`, "g"), pattern: "i am name" },
   ];
 
   for (const { regex, pattern } of explicitPatterns) {
@@ -973,6 +984,15 @@ function extractAllNameCandidates(text: string, messageIndex: number): NameCandi
   const bareNamePatterns = [
     { regex: new RegExp(`(?:Customer|Caller|User|Speaker|Cliente|Usuario):\\s*(${UPPER_CHAR}${LOWER_CHAR}+(?:\\s+${UPPER_CHAR}${LOWER_CHAR}+){0,2})[.,]`, "g"), pattern: "bare name label" },
     { regex: new RegExp(`(?:^|\\n|  )(${UPPER_CHAR}${LOWER_CHAR}+(?:\\s+${UPPER_CHAR}${LOWER_CHAR}+){0,2})[.,]`, "g"), pattern: "bare name" },
+    
+    // ============================================================
+    // Phase 2 Hardening: CAPITALIZED FIRST LAST PATTERN
+    // ============================================================
+    // Fallback pattern that looks for any two capitalized words in sequence
+    // This catches names like "Juliano Estrano" stated without any trigger
+    // Lower confidence but better than "Unknown Caller"
+    // ============================================================
+    { regex: new RegExp(`\\b(${UPPER_CHAR}${LOWER_CHAR}{2,}\\s+${UPPER_CHAR}${LOWER_CHAR}{2,})\\b`, "g"), pattern: "capitalized pair" },
   ];
 
   for (const { regex, pattern } of bareNamePatterns) {
@@ -1205,12 +1225,20 @@ export function extractName(
   
   // Source A: artifact.messages (structured user messages)
   const userMessages = messages.filter(m => m.role === "user");
+  
+  // DEBUG: Log all user messages to see what we're working with
+  console.log(`[extractName] Processing ${userMessages.length} user messages:`);
   userMessages.forEach((msg, idx) => {
+    const preview = msg.message.substring(0, 100);
+    console.log(`[extractName]   msg[${idx}]: "${preview}${msg.message.length > 100 ? '...' : ''}"`);
     const candidates = extractAllNameCandidates(msg.message, idx);
+    if (candidates.length > 0) {
+      console.log(`[extractName]   → Found ${candidates.length} candidates: ${candidates.map(c => `"${c.value}" (${c.pattern}, score=${c.score})`).join(', ')}`);
+    }
     allCandidates.push(...candidates);
   });
   
-  console.log(`[extractName] Found ${allCandidates.length} candidates from messages`);
+  console.log(`[extractName] Total candidates from messages: ${allCandidates.length}`);
   
   // Source B: transcript string (fallback - may have different segmentation)
   if (transcript) {
