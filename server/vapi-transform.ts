@@ -624,7 +624,9 @@ export function validateExtractedName(name: string): string | null {
 }
 
 // Patterns that indicate non-address values
+// Phase 2 Hardening: Added question/prompt phrases from AI agent
 const NON_ADDRESS_PATTERNS = [
+  // Vague location references
   /^not\s*sure/i,
   /^don'?t\s*know/i,
   /^somewhere/i,
@@ -635,6 +637,30 @@ const NON_ADDRESS_PATTERNS = [
   /^in\s*front\s*of/i,
   /^across\s*from/i,
   /^next\s*to/i,
+  
+  // ============================================================
+  // AI AGENT QUESTION PHRASES (must not be captured as addresses)
+  // ============================================================
+  // These are questions the AI asks, not caller-provided addresses
+  // Example: "And what is the street" should NOT become an address
+  
+  // Question phrases that end in street type
+  /^(?:and\s+)?what\s+is\s+(?:the|your)/i,           // "what is the street", "and what is the street"
+  /^(?:and\s+)?where\s+is\s+(?:the|your|this)/i,     // "where is the street"
+  /^(?:and\s+)?which\s+(?:street|road|avenue)/i,     // "which street"
+  /^(?:and\s+)?can\s+you\s+(?:tell|give)/i,          // "can you tell me the street"
+  /^(?:and\s+)?could\s+you\s+(?:tell|give)/i,        // "could you tell me"
+  /^(?:and\s+)?do\s+you\s+know/i,                    // "do you know the street"
+  /^(?:and\s+)?is\s+(?:it|this|that)\s+(?:on|at)/i,  // "is it on Main Street"
+  /^(?:and\s+)?what'?s\s+(?:the|your)/i,             // "what's the street"
+  
+  // Spanish question phrases
+  /^(?:y\s+)?(?:cu[aá]l|qu[eé])\s+(?:es|calle)/i,    // "cuál es la calle", "qué calle"
+  /^(?:y\s+)?d[oó]nde\s+(?:es|está|queda)/i,         // "dónde es", "dónde está"
+  /^(?:y\s+)?puede\s+(?:decirme|darme)/i,            // "puede decirme la dirección"
+  
+  // Generic question starters that shouldn't be addresses
+  /^(?:and\s+)?(?:what|where|which|how|when|why)\s+/i,
 ];
 
 /**
@@ -1463,6 +1489,7 @@ function extractAddressFromText(text: string): { address: string | null; pattern
 
   // Pattern 4: Any text ending in a street type (less confident)
   // Supports accented characters for Spanish street names
+  // Phase 2 Hardening: Added question phrase rejection
   const anyStreetPattern = new RegExp(
     `([A-Za-z0-9\\u00C0-\\u00FF][A-Za-z0-9\\u00C0-\\u00FF\\s'-]{3,40}\\s+(?:${STREET_TYPES}))(?:[.,\\s]|$)`,
     "i"
@@ -1472,7 +1499,22 @@ function extractAddressFromText(text: string): { address: string | null; pattern
     const candidate = anyMatch[1].replace(/[.,!?]$/, "").trim();
     // Must have at least 2 words
     if (candidate.split(/\s+/).length >= 2) {
-      return { address: candidate, pattern: "any-street" };
+      // Phase 2 Hardening: Reject if it looks like an AI agent question
+      // Words that indicate this is a question, not an address
+      const QUESTION_STARTERS = new Set([
+        "what", "where", "which", "how", "when", "why", "who",
+        "is", "are", "do", "does", "can", "could", "would", "should",
+        "and", // Often prefixes questions: "And what is the street?"
+        // Spanish
+        "cual", "cuál", "que", "qué", "donde", "dónde", "como", "cómo",
+      ]);
+      const firstWord = candidate.split(/\s+/)[0].toLowerCase();
+      if (QUESTION_STARTERS.has(firstWord)) {
+        console.log(`[extractAddress] Pattern 4 REJECTED (question phrase): "${candidate}"`);
+        // Don't return - continue to other patterns
+      } else {
+        return { address: candidate, pattern: "any-street" };
+      }
     }
   }
 

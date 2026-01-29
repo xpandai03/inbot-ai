@@ -319,6 +319,24 @@ export async function registerRoutes(
   // Store last Vapi payload for debugging
   let lastVapiPayload: { timestamp: string; type: string; callId: string | null; error: string | null; body: unknown; path?: string } | null = null;
 
+  // ============================================================
+  // VAPI CALL ID DEDUPLICATION (Phase 2 Hardening)
+  // ============================================================
+  // Prevents duplicate records if VAPI sends multiple end-of-call-reports
+  // for the same call (e.g., retries, multiple webhook endpoints)
+  // ============================================================
+  const processedVapiCallIds = new Set<string>();
+  const MAX_VAPI_CALL_IDS = 500; // Keep last 500 call IDs
+
+  function markVapiCallProcessed(callId: string) {
+    processedVapiCallIds.add(callId);
+    // Cleanup old call IDs (keep last MAX)
+    if (processedVapiCallIds.size > MAX_VAPI_CALL_IDS) {
+      const firstId = processedVapiCallIds.values().next().value;
+      if (firstId) processedVapiCallIds.delete(firstId);
+    }
+  }
+
   // Circular buffer for last 20 Vapi events (for /debug/vapi-events)
   interface VapiEventLog {
     timestamp: string;
@@ -451,6 +469,24 @@ export async function registerRoutes(
       console.log("[VAPI] customer.number:", payload?.customer?.number || "N/A");
       console.log("[VAPI] Ended reason:", payload?.message?.endedReason || "N/A");
 
+      // ============================================================
+      // DEDUPLICATION CHECK (Phase 2 Hardening)
+      // ============================================================
+      // If we've already processed this call ID, skip to prevent duplicates
+      if (callId && processedVapiCallIds.has(callId)) {
+        console.log(`[VAPI] DUPLICATE CALL_ID ${callId} - already processed, skipping record creation`);
+        logVapiEvent({
+          timestamp,
+          path: requestPath,
+          messageType: "end-of-call-report",
+          didProcess: false,
+          responseSent: true,
+          callId,
+          error: "DUPLICATE_CALL_ID",
+        });
+        return res.status(200).json({ ok: true, skipped: true, reason: "duplicate_call_id" });
+      }
+
       // Store for debugging (truncate large fields)
       lastVapiPayload = {
         timestamp,
@@ -504,6 +540,12 @@ export async function registerRoutes(
       console.log("[VAPI] Inserting record into database...");
       const newRecord = await storage.createRecord(validation.data);
       console.log("[VAPI] === INSERT SUCCESS === ID:", newRecord.id);
+
+      // Mark call as processed AFTER successful insert (deduplication)
+      if (callId) {
+        markVapiCallProcessed(callId);
+        console.log(`[VAPI] DEDUP MARKED - Call ID ${callId} added to processed set`);
+      }
 
       // Log to event buffer for debugging
       logVapiEvent({
