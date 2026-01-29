@@ -555,12 +555,14 @@ export function validateExtractedName(name: string): string | null {
   }
 
   // ============================================================
-  // HUMAN NAME STRUCTURE CHECK (Phase 1 Hardening)
+  // FINAL HUMAN NAME STRUCTURE CHECK (Phase 1 Final Hardening)
   // ============================================================
-  // Prefer candidates that match human naming patterns:
-  // - 2-3 words with capitalized first letters
-  // - No organizational keywords (already checked above)
-  // - Doesn't look like a brand or entity
+  // A name must satisfy AT LEAST 2 of the following criteria:
+  // 1. Contains 2+ tokens
+  // 2. Contains capitalized tokens (proper noun pattern)
+  // 3. Matches human name pattern (First Last)
+  // 4. Does NOT match intent/filler words
+  // ============================================================
   
   // Reject if all words are single capital letter (initials only, too short)
   if (words.length > 1 && words.every(w => w.length === 1)) {
@@ -568,8 +570,56 @@ export function validateExtractedName(name: string): string | null {
     return null;
   }
 
+  // Calculate human-name criteria score
+  let humanNameScore = 0;
+  
+  // Criterion 1: Has 2-3 tokens (typical human name pattern)
+  if (words.length >= 2 && words.length <= 3) {
+    humanNameScore++;
+  }
+  
+  // Criterion 2: Has capitalized tokens (proper case pattern)
+  const hasCapitalized = trimmed.split(/\s+/).some(w => 
+    /^[A-Z\u00C0-\u00D6\u00D8-\u00DE][a-z\u00DF-\u00F6\u00F8-\u00FF]+$/.test(w)
+  );
+  if (hasCapitalized) {
+    humanNameScore++;
+  }
+  
+  // Criterion 3: Matches First Last pattern (two capitalized words)
+  const firstLastPattern = /^[A-Z\u00C0-\u00D6][a-z\u00DF-\u00FF]+\s+[A-Z\u00C0-\u00D6][a-z\u00DF-\u00FF]+$/;
+  if (firstLastPattern.test(trimmed)) {
+    humanNameScore += 2; // Strong signal - count as 2 criteria
+  }
+  
+  // Criterion 4: Does NOT contain intent/filler/action words
+  const INTENT_FILLER_WORDS = new Set([
+    // Action verbs that start phrases
+    "calling", "texting", "reporting", "asking", "checking", "looking",
+    "trying", "hoping", "needing", "wanting", "getting", "going",
+    // Intent words
+    "pothole", "road", "street", "light", "water", "trash", "garbage",
+    "bill", "payment", "issue", "problem", "damage", "broken", "repair",
+    // Filler/connector words
+    "about", "because", "help", "just", "still", "also", "here", "there",
+    // Spanish equivalents
+    "llamando", "reportando", "buscando", "tratando", "preguntando",
+    "bache", "calle", "luz", "agua", "basura", "factura",
+  ]);
+  
+  const hasIntentFillerWord = words.some(w => INTENT_FILLER_WORDS.has(w));
+  if (!hasIntentFillerWord) {
+    humanNameScore++;
+  }
+  
+  // FINAL GATE: Must satisfy at least 2 criteria to be considered a human name
+  if (humanNameScore < 2) {
+    console.log(`[validate-name] REJECTED (failed human-name criteria, score=${humanNameScore}): "${trimmed}"`);
+    return null;
+  }
+
   // All checks passed
-  console.log(`[validate-name] ACCEPTED: "${trimmed}"`);
+  console.log(`[validate-name] ACCEPTED (human-name score=${humanNameScore}): "${trimmed}"`);
   return trimmed;
 }
 
@@ -643,23 +693,25 @@ interface NameCandidate {
 }
 
 // Base scores for different pattern types (higher = more confident)
+// Phase 1 Final Hardening: DRAMATICALLY increased separation
+// Explicit triggers should MASSIVELY outweigh weak patterns
 const PATTERN_BASE_SCORES: Record<string, number> = {
-  // Explicit name triggers (highest confidence)
-  "my name is": 100,
-  "mi nombre es": 100,
-  "me llamo": 95,
-  "name is": 90,
-  // Self-identification (medium-high confidence)
-  "this is": 80,
-  "habla": 75,
-  "soy": 70,
-  // Weaker triggers (can capture verb phrases)
-  "it's": 50,
-  "yeah it's": 50,
-  "i'm": 40, // Often followed by verbs: "I'm calling", "I'm reporting"
-  // Bare name patterns (low confidence)
-  "bare name": 30,
-  "bare name label": 35,
+  // Explicit name triggers (VERY HIGH confidence - should always win)
+  "my name is": 500,   // Increased from 100 - definitive name statement
+  "mi nombre es": 500, // Spanish equivalent - same confidence
+  "me llamo": 480,     // Increased from 95 - strong Spanish name trigger
+  "name is": 450,      // Increased from 90
+  // Self-identification (high confidence)
+  "this is": 300,      // Increased from 80 - clear self-identification
+  "habla": 280,        // Spanish "speaking is..."
+  "soy": 250,          // Increased from 70 - Spanish "I am"
+  // Weaker triggers (LOW confidence - should rarely win)
+  "it's": 50,          // Kept low - often captures garbage
+  "yeah it's": 50,     // Kept low
+  "i'm": 20,           // DECREASED from 40 - too often followed by verbs
+  // Bare name patterns (VERY LOW confidence - last resort)
+  "bare name": 10,     // Decreased from 30
+  "bare name label": 15, // Decreased from 35
 };
 
 /**
@@ -752,7 +804,8 @@ function extractAllNameCandidates(text: string, messageIndex: number): NameCandi
 
 /**
  * Calculate score adjustments based on quality signals
- * Phase 1 Hardening: Added strong penalties for organization/entity patterns
+ * Phase 1 FINAL Hardening: DRAMATICALLY increased penalties for non-human names
+ * Returns -9999 for automatic disqualification (ensures rejection)
  */
 function calculateNameScoreAdjustments(value: string, rawMatch: string, fullText: string, matchIndex: number): number {
   let adjustment = 0;
@@ -761,7 +814,7 @@ function calculateNameScoreAdjustments(value: string, rawMatch: string, fullText
   const lowerWords = words.map(w => w.toLowerCase());
 
   // ============================================================
-  // ORGANIZATION/ENTITY PENALTIES (CRITICAL - must check first)
+  // AUTOMATIC DISQUALIFIERS (return -9999 to guarantee rejection)
   // ============================================================
   
   const ORGANIZATION_KEYWORDS = new Set([
@@ -778,66 +831,56 @@ function calculateNameScoreAdjustments(value: string, rawMatch: string, fullText
     "union", "center", "plaza", "station", "building",
   ]);
 
-  // -100: Contains organization keyword (almost certainly not a person)
+  // DISQUALIFY: Contains organization keyword
   for (const word of lowerWords) {
     if (ORGANIZATION_KEYWORDS.has(word)) {
-      adjustment -= 100;
-      console.log(`[score] -100 for org keyword "${word}" in "${value}"`);
+      console.log(`[score] DISQUALIFIED (org keyword "${word}"): "${value}"`);
+      return -9999; // Automatic disqualification
     }
   }
 
-  // -80: Ends with AI, Bot, System, Inc, LLC, etc.
+  // DISQUALIFY: Ends with AI, Bot, System, Inc, LLC, etc.
   if (/\s+(ai|bot|system|inc|llc|corp)$/i.test(value)) {
-    adjustment -= 80;
-    console.log(`[score] -80 for entity suffix in "${value}"`);
+    console.log(`[score] DISQUALIFIED (entity suffix): "${value}"`);
+    return -9999;
   }
 
-  // -60: Looks like a place/organization name ("Union City", "Public Works")
-  if (/^(union|public|general|central|main)\s+/i.test(value)) {
-    adjustment -= 60;
-    console.log(`[score] -60 for org-like prefix in "${value}"`);
-  }
-
-  // ============================================================
-  // POSITIVE signals (for likely human names)
-  // ============================================================
-  
-  // +20: Has 2-3 words (full name pattern - "John Smith", "Maria Garcia Lopez")
-  if (words.length >= 2 && words.length <= 3) {
-    adjustment += 20;
-  }
-  
-  // +15: All words are capitalized AND look like name parts (not all caps)
-  const allProperCase = words.every(w => 
-    /^[A-Z\u00C0-\u00D6\u00D8-\u00DE][a-z\u00DF-\u00F6\u00F8-\u00FF]+$/.test(w)
-  );
-  if (allProperCase && words.length >= 2) {
-    adjustment += 15;
-  }
-  
-  // +10: Appears later in transcript (late-stated names are often corrections)
-  if (matchIndex > 100) {
-    adjustment += 10;
-  }
-  if (matchIndex > 300) {
-    adjustment += 10; // Additional bonus for very late mentions
-  }
-
-  // +5: Contains common name suffixes (Jr, Sr, III, etc.)
-  if (/\b(jr|sr|ii|iii|iv)\.?$/i.test(value)) {
-    adjustment += 5;
+  // DISQUALIFY: Looks like an organization name
+  if (/^(union|public|general|central|main)\s+(city|works|services|department)/i.test(value)) {
+    console.log(`[score] DISQUALIFIED (org pattern): "${value}"`);
+    return -9999;
   }
 
   // ============================================================
-  // NEGATIVE signals (for non-names)
+  // HEAVY PENALTIES (for likely non-names)
   // ============================================================
   
-  // -40: Single lowercase word (almost never a valid name)
+  // Intent/filler words that slip through as names
+  const INTENT_FILLER_WORDS = new Set([
+    "calling", "texting", "reporting", "asking", "checking", "looking",
+    "trying", "hoping", "needing", "wanting", "getting", "going",
+    "about", "because", "help", "just", "still", "also", "here", "there",
+    "pothole", "road", "street", "light", "water", "trash", "garbage",
+    "bill", "payment", "issue", "problem", "damage", "broken", "repair",
+    // Spanish
+    "llamando", "reportando", "buscando", "tratando", "preguntando",
+    "bache", "calle", "luz", "agua", "basura", "factura",
+  ]);
+
+  // -300: Contains intent/filler words (very likely not a name)
+  const intentFillerCount = lowerWords.filter(w => INTENT_FILLER_WORDS.has(w)).length;
+  if (intentFillerCount > 0) {
+    adjustment -= 300 * intentFillerCount;
+    console.log(`[score] -${300 * intentFillerCount} for intent/filler words in "${value}"`);
+  }
+
+  // -200: Single lowercase word (almost never a valid name)
   if (words.length === 1 && value === lowerValue) {
-    adjustment -= 40;
+    adjustment -= 200;
+    console.log(`[score] -200 for single lowercase word: "${value}"`);
   }
   
-  // -30: Looks like it's part of an address (contains address words)
+  // -150: Contains address-like words
   const addressWords = new Set([
     "la", "el", "los", "las", "calle", "avenida", "street", "avenue", "road", 
     "drive", "boulevard", "lane", "way", "court", "place", "north", "south",
@@ -845,17 +888,20 @@ function calculateNameScoreAdjustments(value: string, rawMatch: string, fullText
   ]);
   const addressWordCount = lowerWords.filter(w => addressWords.has(w)).length;
   if (addressWordCount > 0) {
-    adjustment -= 30 * addressWordCount;
-    console.log(`[score] -${30 * addressWordCount} for address words in "${value}"`);
+    adjustment -= 150 * addressWordCount;
+    console.log(`[score] -${150 * addressWordCount} for address words in "${value}"`);
   }
   
-  // -35: Appears right after "calling" or "texting" context (likely verb phrase)
-  const contextBefore = fullText.substring(Math.max(0, matchIndex - 30), matchIndex).toLowerCase();
-  if (/(?:i'm|i am)\s*$/.test(contextBefore) && /^(calling|texting|reporting|asking|checking)/i.test(rawMatch)) {
-    adjustment -= 35;
+  // -200: Appears right after "calling", "texting", etc. (verb phrase)
+  const contextBefore = fullText.substring(Math.max(0, matchIndex - 50), matchIndex).toLowerCase();
+  if (/(?:i'm|i am)\s*$/.test(contextBefore)) {
+    if (/^(calling|texting|reporting|asking|checking|looking|trying|hoping)/i.test(rawMatch)) {
+      adjustment -= 200;
+      console.log(`[score] -200 for verb phrase context: "${value}"`);
+    }
   }
   
-  // -25: Single word that looks like a common noun
+  // -150: Single word that's a common noun
   if (words.length === 1) {
     const commonNouns = new Set([
       "five", "three", "one", "two", "four", "six", "seven", "eight", "nine", "ten",
@@ -864,22 +910,55 @@ function calculateNameScoreAdjustments(value: string, rawMatch: string, fullText
       "soda", "help", "because", "about", "super", "fuller", "vienna",
     ]);
     if (commonNouns.has(lowerValue)) {
-      adjustment -= 25;
+      adjustment -= 150;
+      console.log(`[score] -150 for common noun: "${value}"`);
     }
   }
 
-  // -30: Starts with a number word followed by more words (likely address fragment)
+  // -150: Starts with a number word (address fragment)
   const numberStarters = new Set([
     "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
     "eleven", "twelve", "uno", "dos", "tres", "cuatro", "cinco",
   ]);
   if (words.length > 1 && numberStarters.has(lowerWords[0])) {
-    adjustment -= 30;
+    adjustment -= 150;
+    console.log(`[score] -150 for number word start: "${value}"`);
   }
 
-  // -20: Contains digits (names don't have numbers)
+  // -80: Contains digits
   if (/\d/.test(value)) {
-    adjustment -= 20;
+    adjustment -= 80;
+  }
+
+  // ============================================================
+  // POSITIVE signals (for likely human names)
+  // ============================================================
+  
+  // +150: Has 2-3 words with proper case (First Last pattern)
+  const allProperCase = words.every(w => 
+    /^[A-Z\u00C0-\u00D6\u00D8-\u00DE][a-z\u00DF-\u00F6\u00F8-\u00FF]+$/.test(w)
+  );
+  if (allProperCase && words.length >= 2 && words.length <= 3) {
+    adjustment += 150;
+    console.log(`[score] +150 for proper case First Last pattern: "${value}"`);
+  }
+  
+  // +80: Has 2-3 words (typical name length)
+  if (words.length >= 2 && words.length <= 3) {
+    adjustment += 80;
+  }
+  
+  // +50: Appears later in transcript (late-stated names are corrections)
+  if (matchIndex > 100) {
+    adjustment += 50;
+  }
+  if (matchIndex > 300) {
+    adjustment += 50; // Additional bonus for very late mentions
+  }
+
+  // +30: Contains common name suffixes (Jr, Sr, III, etc.)
+  if (/\b(jr|sr|ii|iii|iv)\.?$/i.test(value)) {
+    adjustment += 30;
   }
 
   return adjustment;
@@ -949,7 +1028,8 @@ export function extractName(
     console.log(`[extractName] Total candidates after transcript: ${allCandidates.length}`);
   }
   
-  // Step 2: Cross-field validation - AGGRESSIVELY penalize candidates that overlap with address
+  // Step 2: Cross-field validation - ADDRESS OVERLAP IS NOW A DISQUALIFIER
+  // Phase 1 Final Hardening: If >50% of name words overlap with address, DISQUALIFY
   // This catches cases like "five three La" when address is "53 La Cienega Boulevard"
   if (extractedAddress && extractedAddress !== "Not provided") {
     const addressLower = extractedAddress.toLowerCase();
@@ -966,26 +1046,30 @@ export function extractName(
       const overlapCount = overlappingWords.length;
       
       if (overlapCount > 0) {
-        // Heavy penalty: -50 per overlapping word
-        // If most words overlap, this is almost certainly address bleeding
         const overlapRatio = overlapCount / nameWords.length;
-        const basePenalty = overlapCount * 50;
-        const ratioPenalty = overlapRatio > 0.5 ? 100 : 0; // Extra penalty if majority overlaps
-        const totalPenalty = basePenalty + ratioPenalty;
         
-        console.log(`[extractName] Cross-field: "${candidate.value}" overlaps with address (${overlappingWords.join(", ")}), -${totalPenalty}`);
-        candidate.score -= totalPenalty;
+        // DISQUALIFY: If majority of words overlap with address, this is address bleeding
+        if (overlapRatio >= 0.5) {
+          console.log(`[extractName] DISQUALIFIED: "${candidate.value}" has ${Math.round(overlapRatio * 100)}% overlap with address`);
+          candidate.score = -9999; // Disqualify
+          continue;
+        }
+        
+        // Heavy penalty for partial overlap
+        const penalty = overlapCount * 200;
+        console.log(`[extractName] Cross-field: "${candidate.value}" overlaps with address (${overlappingWords.join(", ")}), -${penalty}`);
+        candidate.score -= penalty;
       }
       
-      // Additional check: if name contains number words and address contains numbers
-      // This catches "five three" when address starts with "53"
+      // DISQUALIFY: If name contains number words and address contains numbers
+      // This is almost certainly address bleeding ("five three" → "53")
       const nameHasNumberWords = nameWords.some(w => 
         /^(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)$/i.test(w)
       );
       const addressHasDigits = /\d/.test(extractedAddress);
       if (nameHasNumberWords && addressHasDigits) {
-        console.log(`[extractName] Cross-field: "${candidate.value}" has number words, address has digits, -60`);
-        candidate.score -= 60;
+        console.log(`[extractName] DISQUALIFIED: "${candidate.value}" has number words, address has digits`);
+        candidate.score = -9999; // Disqualify
       }
     }
   }

@@ -370,14 +370,78 @@ function classifyWithRegex(rawText: string): ClassificationOutput {
   return { intent, department, summary };
 }
 
+// ============================================================
+// STRONG INTENT KEYWORDS (Phase 1 Final Hardening)
+// ============================================================
+// If these keywords appear ANYWHERE in the text, we should NOT
+// fall back to "General Inquiry". Used for post-LLM validation.
+// ============================================================
+
+const STRONG_INTENT_KEYWORDS: Array<{ keywords: RegExp[]; intent: string; department: string }> = [
+  // Pothole / Road Damage
+  {
+    keywords: [/pothole/i, /bache/i, /road\s*damage/i, /street\s*damage/i, /hole\s+in\s+(the\s+)?(road|street)/i],
+    intent: "Pothole / Road Damage",
+    department: "Public Works",
+  },
+  // Streetlight Issue
+  {
+    keywords: [/street\s*light/i, /lamp\s*post/i, /light\s*pole/i, /poste\s*de\s*luz/i, /alumbrado/i],
+    intent: "Streetlight Issue",
+    department: "Public Works",
+  },
+  // Water / Utilities
+  {
+    keywords: [/water\s*(leak|main|pipe|meter)/i, /hydrant/i, /sewer/i, /fuga\s*de\s*agua/i, /tuber[ií]a/i],
+    intent: "Water / Utilities",
+    department: "Public Works",
+  },
+  // Trash / Sanitation
+  {
+    keywords: [/trash\s*(pickup|collection|missed)/i, /garbage/i, /basura/i, /recycl/i, /reciclaje/i],
+    intent: "Trash / Sanitation",
+    department: "Sanitation",
+  },
+  // Billing / Payment
+  {
+    keywords: [/(water|utility|trash)\s*bill/i, /factura/i, /payment\s*plan/i, /recibo/i],
+    intent: "Billing / Payment",
+    department: "Finance",
+  },
+];
+
+/**
+ * Check if strong intent keywords are present in text
+ * Returns the strongest match or null if no strong keywords found
+ */
+function detectStrongIntent(text: string): { intent: string; department: string } | null {
+  const lowerText = text.toLowerCase();
+  
+  for (const { keywords, intent, department } of STRONG_INTENT_KEYWORDS) {
+    for (const keyword of keywords) {
+      if (keyword.test(lowerText)) {
+        console.log(`[classifier] Strong keyword detected: "${keyword.source}" → ${intent}`);
+        return { intent, department };
+      }
+    }
+  }
+  
+  return null;
+}
+
 /**
  * Main classification function
  *
  * Attempts LLM classification first, falls back to regex on failure.
+ * Phase 1 Final Hardening: If LLM returns "General Inquiry" but strong
+ * keywords are present, override with the specific intent.
  * Timeout: 3 seconds for LLM call.
  */
 export async function classifyIntake(input: ClassificationInput): Promise<ClassificationOutput> {
   console.log("[classifier] Classifying intake:", { channel: input.channel, textLength: input.rawText.length });
+
+  // Pre-check for strong intent keywords
+  const strongIntent = detectStrongIntent(input.rawText);
 
   // Try LLM classification with timeout
   try {
@@ -391,6 +455,15 @@ export async function classifyIntake(input: ClassificationInput): Promise<Classi
     ]);
 
     if (llmResult) {
+      // Phase 1 Final Hardening: Override "General Inquiry" if strong keywords present
+      if (llmResult.intent === "General Inquiry" && strongIntent) {
+        console.log(`[classifier] OVERRIDE: LLM returned "General Inquiry" but strong keyword found → ${strongIntent.intent}`);
+        return {
+          intent: strongIntent.intent,
+          department: strongIntent.department,
+          summary: llmResult.summary,
+        };
+      }
       return llmResult;
     }
 
@@ -400,5 +473,17 @@ export async function classifyIntake(input: ClassificationInput): Promise<Classi
   }
 
   // Fallback to regex
-  return classifyWithRegex(input.rawText);
+  const regexResult = classifyWithRegex(input.rawText);
+  
+  // Phase 1 Final Hardening: Override regex "General Inquiry" if strong keywords present
+  if (regexResult.intent === "General Inquiry" && strongIntent) {
+    console.log(`[classifier] OVERRIDE: Regex returned "General Inquiry" but strong keyword found → ${strongIntent.intent}`);
+    return {
+      intent: strongIntent.intent,
+      department: strongIntent.department,
+      summary: regexResult.summary,
+    };
+  }
+  
+  return regexResult;
 }
