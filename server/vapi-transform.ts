@@ -1767,6 +1767,18 @@ function extractAddressFromText(text: string): { address: string | null; pattern
     /(?:vivo\s+en(?:\s+la|\s+el)?|mi\s+direcci[oó]n\s+es|estoy\s+en(?:\s+la|\s+el)?)\s+(?:el\s+)?(\d{1,6}\s+(?:de\s+la\s+)?(?:Calle|Avenida|Av|Pasaje|Camino|Carretera|Plaza)\s+[\w\s]+)/i,
     // Spanish: "en la calle Oak" without number
     /(?:en\s+la|en\s+el)\s+((?:Calle|Avenida|Av|Pasaje|Camino)\s+[\w\s]+)/i,
+    
+    // ============================================================
+    // PHASE 2 SPANISH HARDENING: Additional Spanish address patterns
+    // ============================================================
+    // "es en la calle X" / "está en la calle X" - common response to "what's the address?"
+    /(?:es\s+en|est[aá]\s+en|queda\s+en)\s+(?:la\s+|el\s+)?((?:Calle|Avenida|Av|Pasaje|Camino|Carretera|Plaza|Bulevar)\s+[\w\s]+)/i,
+    // "la dirección es [address]"
+    /la\s+direcci[oó]n\s+es\s+((?:Calle|Avenida|Av)?\s*[\w\s]+\s*\d{1,6})/i,
+    // "en [Street Name]" without explicit Calle/Avenida - common in casual speech
+    /(?:est[aá]|queda|es)\s+en\s+(\d{1,6}\s+[\w\s]+)/i,
+    // Spanish street with "número" - "Calle Oak número 123" / "Avenida Central número 456"
+    /((?:Calle|Avenida|Av|Pasaje|Camino|Plaza)\s+[\w\s]+)\s+n[uú]mero\s+(\d{1,6})/i,
   ];
 
   for (const pattern of prefixPatterns) {
@@ -1789,13 +1801,23 @@ function extractAddressFromText(text: string): { address: string | null; pattern
     new RegExp(`(?:on|at)\\s+([A-Z][a-z]+(?:\\s+[A-Z][a-z]+){1,4}\\s+(?:${STREET_TYPES}))`, "i"),
     // Simple: "on Oak Street"
     new RegExp(`(?:on|at)\\s+([A-Z][a-z]+\\s+(?:${STREET_TYPES}))`, "i"),
+    
+    // ============================================================
+    // SPANISH "en la/el" patterns (Phase 2 Spanish Hardening)
+    // ============================================================
+    // "en la calle Oak" / "en el 123 de Oak"
+    new RegExp(`(?:en\\s+la|en\\s+el)\\s+((?:Calle|Avenida|Av|Pasaje|Camino|Plaza|Bulevar)\\s+[\\w\\s]+)`, "i"),
+    // "en la [number] [street name]" - "en la 123 Oak Street"
+    new RegExp(`(?:en\\s+la|en\\s+el)\\s+(\\d{1,6}\\s+[\\w\\s]+(?:${STREET_TYPES}))`, "i"),
+    // "en [street name] número [number]" - "en Oak Street número 123"
+    new RegExp(`en\\s+([\\w\\s]+(?:${STREET_TYPES}))\\s+n[uú]mero\\s+\\d{1,6}`, "i"),
   ];
   
   for (const pattern of onAtPatterns) {
     const match = text.match(pattern);
     if (match && match[1]) {
       // Skip if it matches "on my street" or similar
-      if (/^(?:my|the|our|this)\s/i.test(match[1])) continue;
+      if (/^(?:my|the|our|this|mi|la|el)\s+(?:calle|street|casa|house)$/i.test(match[1])) continue;
       console.log(`[extractAddressFromText] Pattern 3b (on/at + street) MATCHED: "${match[1]}"`);
       return { address: match[1].replace(/[.,!?]$/, "").trim(), pattern: "on-at-street" };
     }

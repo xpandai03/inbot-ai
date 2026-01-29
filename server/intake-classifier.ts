@@ -290,6 +290,37 @@ const INTENT_PATTERNS: Array<{ pattern: RegExp; intent: string; priority: number
   { pattern: /entr(ar|ando)\s*(a\s*)?(la\s*)?(fuerza|robar)/i, intent: "Safety Concern / Suspicious Activity", priority: 90 },  // breaking in
   { pattern: /persona\s*(extra[ñn]a|sospechosa)/i, intent: "Safety Concern / Suspicious Activity", priority: 85 },  // strange/suspicious person
   { pattern: /revisando\s*(carros|puertas|ventanas)/i, intent: "Safety Concern / Suspicious Activity", priority: 90 },  // checking cars/doors/windows
+  { pattern: /vandalismo|grafiti/i, intent: "Safety Concern / Suspicious Activity", priority: 90 },  // vandalism/graffiti
+  { pattern: /alguien\s*(merodeando|rondando)/i, intent: "Safety Concern / Suspicious Activity", priority: 85 },  // someone lurking
+  
+  // ============================================================
+  // PHASE 2 SPANISH HARDENING: Generic Spanish issue patterns
+  // ============================================================
+  // Common ways Spanish speakers describe municipal issues
+  // These help when specific keywords aren't used
+  
+  // "problema con el/la [service]" patterns
+  { pattern: /problema\s*(con|de|en)\s*(el\s*)?(agua|drenaje|tubería)/i, intent: "Water / Utilities", priority: 85 },
+  { pattern: /problema\s*(con|de|en)\s*(la\s*)?(luz|iluminación|alumbrado)/i, intent: "Streetlight Issue", priority: 85 },
+  { pattern: /problema\s*(con|de|en)\s*(la\s*)?(basura|recolección)/i, intent: "Trash / Sanitation", priority: 85 },
+  { pattern: /problema\s*(con|de|en)\s*(la\s*)?(calle|carretera|pavimento)/i, intent: "Pothole / Road Damage", priority: 85 },
+  { pattern: /problema\s*(con|de|en)\s*(mi\s*)?(factura|recibo|cuenta)/i, intent: "Billing / Payment", priority: 85 },
+  
+  // "no funciona" / "no sirve" patterns (something not working)
+  { pattern: /(luz|lámpara|farol|alumbrado)\s*(no\s*)?(funciona|sirve|enciende)/i, intent: "Streetlight Issue", priority: 85 },
+  { pattern: /(agua)\s*(no\s*)?(sale|hay|tengo|funciona)/i, intent: "Water / Utilities", priority: 85 },
+  
+  // "necesito reportar" / "quiero reportar" patterns
+  { pattern: /reportar\s*(un\s*)?(bache|hoyo)/i, intent: "Pothole / Road Damage", priority: 90 },
+  { pattern: /reportar\s*(una?\s*)?(fuga|problema\s*de\s*agua)/i, intent: "Water / Utilities", priority: 90 },
+  { pattern: /reportar\s*(una?\s*)?(luz|lámpara)/i, intent: "Streetlight Issue", priority: 90 },
+  { pattern: /reportar\s*(la\s*)?basura/i, intent: "Trash / Sanitation", priority: 90 },
+  
+  // "hay un/una" patterns (there is a...)
+  { pattern: /hay\s*(un\s*)?(bache|hoyo)/i, intent: "Pothole / Road Damage", priority: 85 },
+  { pattern: /hay\s*(una?\s*)?(fuga|problema\s*de\s*agua)/i, intent: "Water / Utilities", priority: 85 },
+  { pattern: /hay\s*(una?\s*)?(luz|lámpara)\s*(apagada|rota|que\s*no)/i, intent: "Streetlight Issue", priority: 85 },
+  { pattern: /hay\s*basura/i, intent: "Trash / Sanitation", priority: 85 },
 ];
 
 // Department patterns with context
@@ -459,31 +490,81 @@ const STRONG_INTENT_KEYWORDS: Array<{ keywords: RegExp[]; intent: string; depart
     intent: "Pothole / Road Damage",
     department: "Public Works",
   },
-  // Streetlight Issue
+  // Streetlight Issue (EXPANDED Spanish)
   {
-    keywords: [/street\s*light/i, /lamp\s*post/i, /light\s*pole/i, /poste\s*de\s*luz/i, /alumbrado/i],
+    keywords: [
+      /street\s*light/i, 
+      /lamp\s*post/i, 
+      /light\s*pole/i, 
+      /poste\s*de\s*luz/i, 
+      /alumbrado/i,
+      /luz\s*(de\s*)?(la\s*)?calle/i,           // "luz de la calle"
+      /farol/i,                                  // "farol" (lamp)
+      /l[aá]mpara\s*(de\s*)?calle/i,            // "lámpara de calle"
+      /calle\s*(est[aá]\s*)?(oscura|sin\s*luz)/i, // "calle oscura/sin luz"
+      /no\s*(hay|tiene)\s*luz/i,                // "no hay luz"
+      /luz\s*(apagada|rota|no\s*funciona)/i,    // "luz apagada/rota"
+    ],
     intent: "Streetlight Issue",
     department: "Public Works",
   },
-  // Water / Utilities
+  // Water / Utilities (EXPANDED Spanish)
   {
-    keywords: [/water\s*(leak|main|pipe|meter)/i, /hydrant/i, /sewer/i, /fuga\s*de\s*agua/i, /tuber[ií]a/i],
+    keywords: [
+      /water\s*(leak|main|pipe|meter)/i, 
+      /hydrant/i, 
+      /sewer/i, 
+      /fuga\s*(de\s*)?(agua|gas)/i,             // "fuga de agua/gas"
+      /tuber[ií]a/i,                            // "tubería"
+      /hidrante/i,                              // "hidrante"
+      /alcantarilla/i,                          // "alcantarilla" (sewer)
+      /agua\s*(no\s*hay|sin|cortada|falta)/i,   // "no hay agua", "sin agua"
+      /no\s*(hay|tengo|tiene)\s*agua/i,         // "no hay agua", "no tengo agua"
+      /problema\s*(de|con)\s*(el\s*)?(agua|drenaje)/i, // "problema con el agua"
+      /medidor\s*(de\s*)?(agua|luz|gas)/i,      // "medidor de agua"
+      /corte\s*(de\s*)?(agua|luz|gas)/i,        // "corte de agua"
+      /ca[ñn]o\s*(roto|da[ñn]ado|con\s*fuga)/i, // "caño roto"
+    ],
     intent: "Water / Utilities",
     department: "Public Works",
   },
-  // Trash / Sanitation
+  // Trash / Sanitation (EXPANDED Spanish)
   {
-    keywords: [/trash\s*(pickup|collection|missed)/i, /garbage/i, /basura/i, /recycl/i, /reciclaje/i],
+    keywords: [
+      /trash\s*(pickup|collection|missed)/i, 
+      /garbage/i, 
+      /basura/i,                                // "basura"
+      /recycl/i, 
+      /reciclaje/i,
+      /no\s*(pas[oó]|vino)\s*(el\s*)?(cami[oó]n|la\s*basura)/i, // "no pasó el camión"
+      /cami[oó]n\s*(de\s*)?(la\s*)?basura/i,    // "camión de basura"
+      /recolecci[oó]n\s*(de\s*)?(basura|desechos)/i, // "recolección de basura"
+      /contenedor/i,                            // "contenedor"
+      /desechos/i,                              // "desechos" (waste)
+      /tirar\s*(la\s*)?basura/i,               // "tirar basura"
+      /recoger\s*(la\s*)?basura/i,             // "recoger basura"
+    ],
     intent: "Trash / Sanitation",
     department: "Sanitation",
   },
-  // Billing / Payment
+  // Billing / Payment (EXPANDED Spanish)
   {
-    keywords: [/(water|utility|trash)\s*bill/i, /factura/i, /payment\s*plan/i, /recibo/i],
+    keywords: [
+      /(water|utility|trash)\s*bill/i, 
+      /factura/i,                              // "factura"
+      /payment\s*plan/i, 
+      /recibo/i,                               // "recibo"
+      /pagar\s*(mi\s*)?(factura|recibo|cuenta)/i, // "pagar mi factura"
+      /cuenta\s*(de|del)\s*(agua|luz|gas)/i,   // "cuenta del agua"
+      /cobro\s*(excesivo|incorrecto|alto)/i,   // "cobro excesivo"
+      /plan\s*(de\s*)?pago/i,                  // "plan de pago"
+      /deuda/i,                                // "deuda" (debt)
+      /adeudo/i,                               // "adeudo" (amount owed)
+    ],
     intent: "Billing / Payment",
     department: "Finance",
   },
-  // Safety Concern / Suspicious Activity (Phase 2 Hardening)
+  // Safety Concern / Suspicious Activity (EXPANDED Spanish)
   {
     keywords: [
       /suspicious/i, 
@@ -493,10 +574,15 @@ const STRONG_INTENT_KEYWORDS: Array<{ keywords: RegExp[]; intent: string; depart
       /checking\s*(car|door|lock)/i,
       /trying\s*to\s*(open|break|get\s*into)/i,
       /someone\s*(walking|looking|hanging)\s*around/i,
-      /sospechoso/i,
-      /intruso/i,
-      /robo/i,
-      /ladr[oó]n/i,
+      /sospechoso/i,                           // "sospechoso"
+      /intruso/i,                              // "intruso"
+      /robo/i,                                 // "robo"
+      /ladr[oó]n/i,                            // "ladrón"
+      /persona\s*extra[ñn]a/i,                 // "persona extraña"
+      /alguien\s*(merodeando|rondando|sospechoso)/i, // "alguien merodeando"
+      /vandalismo/i,                           // "vandalismo"
+      /grafiti/i,                              // "grafiti"
+      /da[ñn]o\s*(a\s*)?(propiedad|veh[ií]culo|carro)/i, // "daño a propiedad"
     ],
     intent: "Safety Concern / Suspicious Activity",
     department: "Public Safety",
