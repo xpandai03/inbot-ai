@@ -856,6 +856,11 @@ const PATTERN_BASE_SCORES: Record<string, number> = {
   "this is": 300,      // Increased from 80 - clear self-identification
   "habla": 280,        // Spanish "speaking is..."
   "soy": 250,          // Increased from 70 - Spanish "I am"
+  // Response to name question (MEDIUM confidence - needs validation)
+  // Phase 2 Hardening: When AI asks "what's your name?" and caller responds
+  "name only response": 200,  // Just "Juliano Estrano" - medium, needs First Last pattern
+  "short response": 180,      // "It's Juliano Estrano" / "Just Juliano Estrano"
+  "name then continue": 250,  // "Juliano Estrano, I'm calling about..." - higher confidence
   // Weaker triggers (LOW confidence - should rarely win)
   "it's": 50,          // Kept low - often captures garbage
   "yeah it's": 50,     // Kept low
@@ -914,6 +919,23 @@ function extractAllNameCandidates(text: string, messageIndex: number): NameCandi
     // Spanish casual: "Hola, [Name] llamando" / "Sí, [Name] aquí"
     { regex: new RegExp(`(?:hola|bueno),?\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){1,2})\\s+(?:llamando|aqu[ií])`, "gi"), pattern: "casual intro" },
     { regex: new RegExp(`(?:s[ií]),?\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){1,2})\\s+(?:aqu[ií]|llamando|hablando)`, "gi"), pattern: "yes intro" },
+    
+    // ============================================================
+    // Phase 2 Hardening: RESPONSE TO NAME QUESTION
+    // ============================================================
+    // When AI asks "What's your name?" and caller responds with just their name
+    // These patterns look for the name stated right after common AI questions
+    // ============================================================
+    
+    // Name stated alone after AI asks (very short message = just the name)
+    // Requires 2+ capitalized words (First Last pattern)
+    { regex: new RegExp(`^(${NAME_WORD_PATTERN}\\s+${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN})?)$`, "gi"), pattern: "name only response" },
+    
+    // "It's [Name]" / "Just [Name]" - short responses
+    { regex: new RegExp(`(?:it'?s|just|only)\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){1,2})`, "gi"), pattern: "short response" },
+    
+    // "[Name], and..." / "[Name], I'm calling about..." - name followed by continuation
+    { regex: new RegExp(`^(${NAME_WORD_PATTERN}\\s+${NAME_WORD_PATTERN}),?\\s+(?:and|i'm|i am|calling|here|speaking)`, "gi"), pattern: "name then continue" },
   ];
 
   for (const { regex, pattern } of explicitPatterns) {
@@ -1351,6 +1373,7 @@ const MULTIPLIERS: Record<string, number> = {
 
 // Street type keywords (stop parsing when we hit these)
 // Phase 1 Spanish Hardening: Added Spanish street types and common words
+// Phase 2 Hardening: REMOVED ordinals (first-fifth) - they should be part of address numbers
 const STREET_KEYWORDS = new Set([
   // English street types
   "street", "st", "avenue", "ave", "drive", "dr", "road", "rd",
@@ -1360,13 +1383,50 @@ const STREET_KEYWORDS = new Set([
   // Spanish street types
   "calle", "avenida", "av", "pasaje", "camino", "carretera", "plaza",
   "callejón", "callejon", "paseo", "bulevar", "autopista", "vereda", "sendero",
-  // English common street name words
-  "main", "oak", "maple", "elm", "pine", "cedar", "first", "second",
-  "third", "fourth", "fifth", "north", "south", "east", "west",
+  // English common street name words (NOT ordinals - those are handled separately)
+  "main", "oak", "maple", "elm", "pine", "cedar",
+  "north", "south", "east", "west",
   // Spanish common street name words
   "norte", "sur", "este", "oeste", "principal", "central", "mayor",
-  "primero", "primera", "segundo", "segunda", "tercero", "tercera",
 ]);
+
+// ============================================================
+// ORDINAL NUMBERS (Phase 2 Hardening)
+// ============================================================
+// Ordinal numbers for street addresses: "24th Street", "1st Avenue"
+// These should be treated as part of the street NUMBER, not the name
+// e.g., "twenty fourth street" → "24th Street" (not "20 fourth Street")
+// ============================================================
+const ORDINAL_WORDS: Record<string, string> = {
+  "first": "1st", "second": "2nd", "third": "3rd", "fourth": "4th", "fifth": "5th",
+  "sixth": "6th", "seventh": "7th", "eighth": "8th", "ninth": "9th", "tenth": "10th",
+  "eleventh": "11th", "twelfth": "12th", "thirteenth": "13th", "fourteenth": "14th",
+  "fifteenth": "15th", "sixteenth": "16th", "seventeenth": "17th", "eighteenth": "18th",
+  "nineteenth": "19th", "twentieth": "20th", "thirtieth": "30th", "fortieth": "40th",
+  "fiftieth": "50th", "sixtieth": "60th", "seventieth": "70th", "eightieth": "80th",
+  "ninetieth": "90th", "hundredth": "100th",
+  // Spanish ordinals
+  "primero": "1st", "primera": "1st", "segundo": "2nd", "segunda": "2nd",
+  "tercero": "3rd", "tercera": "3rd", "cuarto": "4th", "cuarta": "4th",
+  "quinto": "5th", "quinta": "5th",
+};
+
+// Check if word is an ordinal that can follow a number
+// e.g., "twenty" + "fourth" = "24th"
+function isOrdinalWord(word: string): boolean {
+  return ORDINAL_WORDS[word.toLowerCase()] !== undefined;
+}
+
+// Get the numeric value of an ordinal (for combining with tens)
+// e.g., "fourth" → 4 (to combine with "twenty" → 24)
+function getOrdinalValue(word: string): number | null {
+  const lower = word.toLowerCase();
+  const ordinal = ORDINAL_WORDS[lower];
+  if (!ordinal) return null;
+  // Extract number from ordinal string (e.g., "4th" → 4)
+  const num = parseInt(ordinal, 10);
+  return isNaN(num) ? null : num;
+}
 
 /**
  * Check if a word is a number word
@@ -1501,12 +1561,15 @@ function parseSpokenNumber(words: string[]): number | null {
 
 /**
  * Normalize spoken numbers in an address to digits
+ * Phase 2 Hardening: Also handles ordinal numbers for street addresses
  *
  * Examples:
  *   "Eleven twenty two Main Street" → "1122 Main Street"
  *   "five four eight four Main Street" → "5484 Main Street"
  *   "fifty four eighty four Oak Drive" → "5484 Oak Drive"
  *   "nine oh five Pine Lane" → "905 Pine Lane"
+ *   "twenty fourth Street" → "24th Street" (ORDINAL)
+ *   "seven oh one one twenty fourth Street" → "7011 24th Street" (MIXED)
  */
 export function normalizeSpokenAddress(input: string): string {
   if (!input) return input;
@@ -1515,8 +1578,10 @@ export function normalizeSpokenAddress(input: string): string {
   const numberWords: string[] = [];
   const restWords: string[] = [];
   let foundStreetWord = false;
+  let ordinalResult: string | null = null;
 
   // Collect leading number words until we hit a street keyword or non-number word
+  // Phase 2 Hardening: Also check for ordinals
   for (let i = 0; i < words.length; i++) {
     const word = words[i];
     const lower = word.toLowerCase().replace(/[.,!?]/g, "");
@@ -1524,6 +1589,38 @@ export function normalizeSpokenAddress(input: string): string {
     if (foundStreetWord || STREET_KEYWORDS.has(lower)) {
       foundStreetWord = true;
       restWords.push(word);
+    } else if (isOrdinalWord(lower)) {
+      // ============================================================
+      // ORDINAL HANDLING (Phase 2 Hardening)
+      // ============================================================
+      // Check if this ordinal follows a tens word to form compound ordinal
+      // e.g., "twenty" + "fourth" = "24th"
+      // e.g., "thirty" + "first" = "31st"
+      // ============================================================
+      
+      const ordinalValue = getOrdinalValue(lower);
+      if (ordinalValue !== null && ordinalValue <= 9 && numberWords.length > 0) {
+        // Check if last number word was a tens word (20, 30, 40, etc.)
+        const lastWord = numberWords[numberWords.length - 1];
+        const tensValue = TENS_WORDS[lastWord];
+        
+        if (tensValue !== undefined && tensValue >= 20 && tensValue <= 90) {
+          // Combine tens + ordinal: "twenty" (20) + "fourth" (4) = "24th"
+          numberWords.pop(); // Remove the tens word
+          const combined = tensValue + ordinalValue;
+          ordinalResult = combined + getOrdinalSuffix(combined);
+          console.log(`[normalize] Ordinal compound: "${lastWord} ${lower}" → "${ordinalResult}"`);
+        } else {
+          // Standalone ordinal after other numbers
+          // e.g., "seven oh one one" + "first" = "7011 1st"
+          ordinalResult = ORDINAL_WORDS[lower];
+        }
+      } else {
+        // Standalone ordinal (e.g., "first street")
+        ordinalResult = ORDINAL_WORDS[lower];
+      }
+      foundStreetWord = true;
+      // Don't add ordinal to restWords - we'll handle it separately
     } else if (isNumberWord(lower)) {
       numberWords.push(lower);
     } else {
@@ -1533,24 +1630,40 @@ export function normalizeSpokenAddress(input: string): string {
     }
   }
 
-  // If no number words found, return original
-  if (numberWords.length === 0) {
+  // If no number words found and no ordinal, return original
+  if (numberWords.length === 0 && !ordinalResult) {
     return input;
   }
 
-  // Parse the number words
-  const parsedNumber = parseSpokenNumber(numberWords);
-
-  if (parsedNumber === null) {
-    return input;
+  // Parse the number words (if any)
+  let addressNumber = "";
+  if (numberWords.length > 0) {
+    const parsedNumber = parseSpokenNumber(numberWords);
+    if (parsedNumber !== null) {
+      addressNumber = parsedNumber.toString();
+    }
   }
 
-  // Reconstruct the address
-  const normalizedAddress = [parsedNumber.toString(), ...restWords].join(" ");
+  // Combine: number + ordinal + rest
+  const parts: string[] = [];
+  if (addressNumber) parts.push(addressNumber);
+  if (ordinalResult) parts.push(ordinalResult);
+  parts.push(...restWords);
+
+  const normalizedAddress = parts.join(" ");
 
   console.log(`[normalize] "${input}" → "${normalizedAddress}"`);
 
   return normalizedAddress;
+}
+
+/**
+ * Get ordinal suffix for a number (1st, 2nd, 3rd, 4th, etc.)
+ */
+function getOrdinalSuffix(n: number): string {
+  const s = ["th", "st", "nd", "rd"];
+  const v = n % 100;
+  return s[(v - 20) % 10] || s[v] || s[0];
 }
 
 /**
