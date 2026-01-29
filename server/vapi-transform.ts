@@ -668,32 +668,74 @@ const NON_ADDRESS_PATTERNS = [
  * Returns null if address is invalid (caller should use default)
  *
  * Validation rules:
+ * - Clean up transcription artifacts (dashes, filler words)
  * - Reject vague location descriptions
  * - Reject addresses < 5 chars
  * - Reject values that are clearly not street addresses
+ * - Reject addresses that are just "number + Street" with nothing in between
  */
 export function validateExtractedAddress(address: string): string | null {
   if (!address || address.trim().length === 0) return null;
 
-  const trimmed = address.trim();
+  let cleaned = address.trim();
+
+  // ============================================================
+  // PHASE 2 HARDENING: Clean up transcription artifacts
+  // ============================================================
+  // Remove common transcription noise that appears in addresses:
+  // - Double dashes: "40 -- Street" → "40 Street"
+  // - Filler words: "40 um Street" → "40 Street"
+  // - Multiple spaces: "40   Street" → "40 Street"
+  // ============================================================
+  
+  // Remove double/triple dashes (common transcription artifact)
+  cleaned = cleaned.replace(/\s*-{2,}\s*/g, " ");
+  
+  // Remove common filler words/sounds
+  cleaned = cleaned.replace(/\b(um|uh|er|ah|like|you know)\b/gi, " ");
+  
+  // Normalize multiple spaces to single space
+  cleaned = cleaned.replace(/\s+/g, " ").trim();
+  
+  console.log(`[validate-address] Input: "${address}" → Cleaned: "${cleaned}"`);
 
   // Length check (minimum reasonable address: "1 A St" = 6 chars)
-  if (trimmed.length < 5) {
-    console.log(`[validate-address] REJECTED (too short): "${trimmed}"`);
+  if (cleaned.length < 5) {
+    console.log(`[validate-address] REJECTED (too short): "${cleaned}"`);
     return null;
   }
 
   // Non-address pattern check
   for (const pattern of NON_ADDRESS_PATTERNS) {
-    if (pattern.test(trimmed)) {
-      console.log(`[validate-address] REJECTED (non-address): "${trimmed}"`);
+    if (pattern.test(cleaned)) {
+      console.log(`[validate-address] REJECTED (non-address): "${cleaned}"`);
+      return null;
+    }
+  }
+
+  // ============================================================
+  // PHASE 2 HARDENING: Reject incomplete addresses
+  // ============================================================
+  // Reject addresses that are just "number Street" with no street NAME
+  // e.g., "40 Street" is not a valid address (missing street name)
+  // Valid: "40 Main Street", "40 Oak Street"
+  // Invalid: "40 Street", "123 Avenue"
+  // ============================================================
+  
+  const words = cleaned.split(/\s+/);
+  if (words.length === 2) {
+    const [first, second] = words;
+    // Check if second word is ONLY a street type (no name)
+    const streetTypeOnly = new RegExp(`^(${STREET_TYPES})$`, "i");
+    if (/^\d+$/.test(first) && streetTypeOnly.test(second)) {
+      console.log(`[validate-address] REJECTED (number + street type only, no street name): "${cleaned}"`);
       return null;
     }
   }
 
   // All checks passed
-  console.log(`[validate-address] ACCEPTED: "${trimmed}"`);
-  return trimmed;
+  console.log(`[validate-address] ACCEPTED: "${cleaned}"`);
+  return cleaned;
 }
 
 // Character class for name matching (English + Spanish accented characters)
