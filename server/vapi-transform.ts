@@ -63,6 +63,59 @@ export interface VapiWebhookPayload {
 }
 
 /**
+ * Call metadata extracted from Vapi webhook for email notifications
+ * This data is NOT persisted to the database - only passed to email function
+ */
+export interface VapiCallMetadata {
+  recordingUrl: string | null;
+  stereoRecordingUrl: string | null;
+  transcript: string | null;
+  analysisSuccess: boolean;
+  endedReason: string;
+}
+
+/**
+ * Extract call metadata from Vapi webhook payload
+ * Used to include recording links and transcripts in department emails
+ */
+export function extractCallMetadata(payload: VapiWebhookPayload): VapiCallMetadata {
+  const msg = payload.message;
+
+  // Cast message to unknown first to safely access optional properties
+  // Recording URL can be in multiple locations depending on Vapi version
+  const msgAny = msg as unknown as Record<string, unknown>;
+  const artifact = msg.artifact as Record<string, unknown> | undefined;
+  const recording = artifact?.recording as Record<string, unknown> | undefined;
+  const monoRecording = recording?.mono as Record<string, unknown> | undefined;
+
+  const recordingUrl =
+    (msgAny.recordingUrl as string | undefined) ||
+    (monoRecording?.combinedUrl as string | undefined) ||
+    null;
+
+  const stereoRecordingUrl =
+    (msgAny.stereoRecordingUrl as string | undefined) ||
+    (recording?.stereoUrl as string | undefined) ||
+    null;
+
+  const metadata: VapiCallMetadata = {
+    recordingUrl,
+    stereoRecordingUrl,
+    transcript: msg.transcript || null,
+    analysisSuccess: msg.analysis?.successEvaluation === "true",
+    endedReason: msg.endedReason || "unknown",
+  };
+
+  console.log("[extractCallMetadata] Recording URL:", metadata.recordingUrl ? "present" : "none");
+  console.log("[extractCallMetadata] Stereo URL:", metadata.stereoRecordingUrl ? "present" : "none");
+  console.log("[extractCallMetadata] Transcript length:", metadata.transcript?.length || 0);
+  console.log("[extractCallMetadata] Analysis success:", metadata.analysisSuccess);
+  console.log("[extractCallMetadata] Ended reason:", metadata.endedReason);
+
+  return metadata;
+}
+
+/**
  * Check if payload is a valid Vapi end-of-call-report
  */
 export function isEndOfCallReport(payload: unknown): payload is VapiWebhookPayload {

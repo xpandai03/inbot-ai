@@ -7,6 +7,7 @@
 
 import { Resend } from "resend";
 import type { IntakeRecord } from "@shared/schema";
+import type { VapiCallMetadata } from "./vapi-transform";
 
 // Resend client - instantiated lazily when sending email
 let resendClient: Resend | null = null;
@@ -37,8 +38,13 @@ export interface EmailSendResult {
 
 /**
  * Format interaction data into email content
+ * @param record - The intake record
+ * @param callMetadata - Optional call metadata with recording URL and transcript (Voice only)
  */
-function formatEmailContent(record: IntakeRecord): { subject: string; html: string; text: string } {
+function formatEmailContent(
+  record: IntakeRecord,
+  callMetadata?: VapiCallMetadata
+): { subject: string; html: string; text: string } {
   const subject = `[${record.department}] New Intake: ${record.name}`;
 
   // Format timestamp in Eastern Time (America/New_York) for municipal staff
@@ -49,6 +55,56 @@ function formatEmailContent(record: IntakeRecord): { subject: string; html: stri
   }) + " ET";
 
   console.log(`[email] Timestamp raw: ${record.timestamp}, formatted ET: ${timestamp}`);
+
+  // Build recording section (Voice only, if URL present)
+  const recordingUrl = callMetadata?.recordingUrl || callMetadata?.stereoRecordingUrl;
+  const recordingHtml = (record.channel === "Voice" && recordingUrl) ? `
+      <div style="background: #f0fdf4; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #22c55e;">
+        <h3 style="margin: 0 0 10px 0; color: #1a1a1a;">📞 Call Recording</h3>
+        <p style="margin: 0;">
+          <a href="${recordingUrl}" style="color: #16a34a; text-decoration: underline; font-weight: 500;">
+            Listen to Call Recording
+          </a>
+        </p>
+      </div>
+  ` : "";
+
+  const recordingText = (record.channel === "Voice" && recordingUrl)
+    ? `\nCall Recording:\n${recordingUrl}\n`
+    : "";
+
+  // Build transcript section (Voice only, if transcript present)
+  const transcript = callMetadata?.transcript;
+  const transcriptPreview = transcript ? transcript.substring(0, 500) : null;
+  const transcriptHtml = (record.channel === "Voice" && transcriptPreview) ? `
+      <div style="background: #fef3c7; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #f59e0b;">
+        <h3 style="margin: 0 0 10px 0; color: #1a1a1a;">📝 Call Transcript</h3>
+        <pre style="margin: 0; white-space: pre-wrap; word-wrap: break-word; font-family: inherit; font-size: 14px; color: #374151; background: #fffbeb; padding: 10px; border-radius: 4px;">${transcriptPreview}${transcript && transcript.length > 500 ? "..." : ""}</pre>
+      </div>
+  ` : "";
+
+  const transcriptText = (record.channel === "Voice" && transcriptPreview)
+    ? `\nCall Transcript (first 500 chars):\n${transcriptPreview}${transcript && transcript.length > 500 ? "..." : ""}\n`
+    : "";
+
+  // Build review advisory (Voice only, if call flagged as incomplete)
+  const showReviewAdvisory = record.channel === "Voice" && callMetadata && !callMetadata.analysisSuccess;
+  const reviewAdvisoryHtml = showReviewAdvisory ? `
+      <div style="background: #fef2f2; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ef4444;">
+        <h3 style="margin: 0 0 10px 0; color: #1a1a1a;">⚠️ Please Review This Call</h3>
+        <p style="margin: 0; color: #374151;">
+          This call may have ended early or the intake data may be incomplete.
+          Please review the call recording and transcript above to verify the information.
+        </p>
+        <p style="margin: 10px 0 0 0; color: #6b7280; font-size: 13px;">
+          Call ended reason: ${callMetadata?.endedReason || "unknown"}
+        </p>
+      </div>
+  ` : "";
+
+  const reviewAdvisoryText = showReviewAdvisory
+    ? `\n⚠️ PLEASE REVIEW THIS CALL\nThis call may have ended early or the intake data may be incomplete.\nCall ended reason: ${callMetadata?.endedReason || "unknown"}\n`
+    : "";
 
   const html = `
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -91,6 +147,12 @@ function formatEmailContent(record: IntakeRecord): { subject: string; html: stri
         </tr>
       </table>
 
+      ${reviewAdvisoryHtml}
+
+      ${recordingHtml}
+
+      ${transcriptHtml}
+
       <div style="background: #f8fafc; padding: 15px; border-radius: 8px; margin: 20px 0;">
         <h3 style="margin: 0 0 10px 0; color: #1a1a1a;">Issue Summary</h3>
         <p style="margin: 0; color: #374151;">${record.transcriptSummary || "No summary available"}</p>
@@ -119,7 +181,7 @@ Timestamp: ${timestamp}
 Channel: ${record.channel}
 Language: ${record.language}
 Duration: ${Math.round(record.durationSeconds / 60)} min ${record.durationSeconds % 60} sec
-
+${reviewAdvisoryText}${recordingText}${transcriptText}
 Issue Summary:
 ${record.transcriptSummary || "No summary available"}
 
@@ -136,10 +198,14 @@ Record ID: ${record.id}
 /**
  * Send department notification email
  * Returns result immediately, never throws
+ * @param record - The intake record to notify about
+ * @param config - Email configuration for the department
+ * @param callMetadata - Optional Vapi call metadata with recording/transcript (Voice only)
  */
 export async function sendDepartmentEmail(
   record: IntakeRecord,
-  config: DepartmentEmailConfig
+  config: DepartmentEmailConfig,
+  callMetadata?: VapiCallMetadata
 ): Promise<EmailSendResult> {
   // Get Resend client (lazy initialization)
   const resend = getResendClient();
@@ -149,7 +215,7 @@ export async function sendDepartmentEmail(
   }
 
   try {
-    const { subject, html, text } = formatEmailContent(record);
+    const { subject, html, text } = formatEmailContent(record, callMetadata);
 
     const recipients = [config.email];
     const ccRecipients = config.cc_email ? [config.cc_email] : undefined;

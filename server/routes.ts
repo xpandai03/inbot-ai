@@ -12,7 +12,9 @@ import {
   transformVapiToIntakeRecord,
   getCallId,
   extractSmsFields,
+  extractCallMetadata,
   type VapiWebhookPayload,
+  type VapiCallMetadata,
 } from "./vapi-transform";
 import { sendDepartmentEmail, normalizeDepartment } from "./email";
 import { requireAuth, requireSuperAdmin, getEffectiveClientId } from "./auth";
@@ -61,8 +63,13 @@ const conditionalSuperAdmin: RequestHandler = (req, res, next) => {
 /**
  * Trigger department email notification (async, fire-and-forget)
  * Never blocks the response or throws errors
+ * @param record - The intake record to notify about
+ * @param callMetadata - Optional Vapi call metadata with recording/transcript (Voice only)
  */
-async function triggerDepartmentEmail(record: IntakeRecord): Promise<void> {
+async function triggerDepartmentEmail(
+  record: IntakeRecord,
+  callMetadata?: VapiCallMetadata
+): Promise<void> {
   try {
     // Normalize department to known categories
     const normalizedDept = normalizeDepartment(record.department);
@@ -75,8 +82,8 @@ async function triggerDepartmentEmail(record: IntakeRecord): Promise<void> {
       return;
     }
 
-    // Send email (async)
-    const result = await sendDepartmentEmail(record, emailConfig);
+    // Send email (async) - pass callMetadata for Voice channel
+    const result = await sendDepartmentEmail(record, emailConfig, callMetadata);
 
     // Log the result
     await storage.logEmailSend(
@@ -470,6 +477,10 @@ export async function registerRoutes(
       const partialRecord = transformVapiToIntakeRecord(vapiPayload);
       const { rawText, ...recordFields } = partialRecord;
 
+      // Extract call metadata for email notifications (recording URL, transcript)
+      const callMetadata = extractCallMetadata(vapiPayload);
+      console.log("[VAPI] Call metadata extracted - recording:", callMetadata.recordingUrl ? "yes" : "no");
+
       console.log("[VAPI] Extracted data - name:", recordFields.name, "phone:", recordFields.phone);
       console.log("[VAPI] Raw text length:", rawText?.length || 0);
 
@@ -509,6 +520,7 @@ export async function registerRoutes(
       res.status(200).json({ ok: true, recordId: newRecord.id });
 
       // Background: classify and update (fire-and-forget)
+      // Capture callMetadata in closure for email notification
       setImmediate(async () => {
         try {
           console.log("[VAPI] Background: Starting classification...");
@@ -526,12 +538,13 @@ export async function registerRoutes(
           });
           console.log("[VAPI] Background: Record updated with classification");
 
+          // Pass callMetadata to include recording link and transcript in email
           triggerDepartmentEmail({
             ...newRecord,
             intent: classification.intent,
             department: classification.department,
             transcriptSummary: classification.summary,
-          }).catch((e) => console.error("[VAPI] Background: Email failed:", e));
+          }, callMetadata).catch((e) => console.error("[VAPI] Background: Email failed:", e));
         } catch (bgError) {
           console.error("[VAPI] Background: Classification failed:", bgError);
         }
