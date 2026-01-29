@@ -661,6 +661,33 @@ const NON_ADDRESS_PATTERNS = [
   
   // Generic question starters that shouldn't be addresses
   /^(?:and\s+)?(?:what|where|which|how|when|why)\s+/i,
+  
+  // ============================================================
+  // ISSUE DESCRIPTIONS (must not be captured as addresses)
+  // ============================================================
+  // These are caller issue descriptions, not street addresses
+  // Phase 2 Hardening: Reject issue/problem descriptions
+  
+  // Infrastructure issues
+  /cable\s*(hanging|down|fallen|broken)/i,           // "cable hanging from..."
+  /light\s*(pole|post)\s*(is|has|down|broken|fallen)/i, // "light pole is down"
+  /hanging\s*(from|on|off)/i,                        // "hanging from the..."
+  /\b(broken|fallen|down|damaged|leaking|flooded)\s+(cable|wire|light|pole|pipe|hydrant)/i,
+  
+  // Issue descriptors that aren't addresses
+  /^(?:there'?s?\s+)?(?:a\s+)?(?:cable|wire|light|pole|tree|branch)/i,  // "there's a cable..."
+  /^(?:s\s+)?a\s+(?:cable|wire|light|tree|branch|pole)/i,               // "s a cable" (truncated "there's a cable")
+  /^(?:it'?s?\s+)?(?:a\s+)?(?:cable|wire|light|pole)/i,                // "it's a cable"
+  
+  // Problem/issue language
+  /(?:pothole|hole|crack|damage|broken|leak|flood|fire|smoke|fallen)/i,
+  
+  // Starts with articles/pronouns without numbers (not addresses)
+  /^(?:a|the|this|that|there|it)\s+(?![\d])/i,       // "a cable", "the light" (but not "a 123 Main St")
+  
+  // Spanish issue phrases
+  /cable\s*(colgando|caído|roto)/i,                  // "cable colgando"
+  /poste\s*(de\s*)?luz\s*(caído|roto|dañado)/i,     // "poste de luz caído"
 ];
 
 /**
@@ -731,6 +758,54 @@ export function validateExtractedAddress(address: string): string | null {
       console.log(`[validate-address] REJECTED (number + street type only, no street name): "${cleaned}"`);
       return null;
     }
+  }
+
+  // ============================================================
+  // PHASE 2 HARDENING: Address structure validation
+  // ============================================================
+  // Valid addresses typically:
+  // - Start with a number (most common: "123 Main Street")
+  // - Start with a spoken number word ("forty Main Street")
+  // - Start with a street type in Spanish ("Calle Main 123")
+  // - Are cross-street references ("Main & Oak", "corner of...")
+  // - Are contextual with "(Approximate)" suffix (from our extraction)
+  // 
+  // Invalid addresses (issue descriptions):
+  // - Start with articles: "a cable", "the light"
+  // - Start with verbs: "hanging", "broken"
+  // - Describe issues not locations
+  // ============================================================
+  
+  const firstWord = words[0]?.toLowerCase();
+  
+  // Check if starts with a valid address indicator
+  const VALID_ADDRESS_STARTERS = [
+    // Numeric
+    /^\d/,                                              // Starts with digit
+    // Spoken numbers (English)
+    /^(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred)/i,
+    // Spoken numbers (Spanish)
+    /^(uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce|trece|catorce|quince|veinte|treinta|cuarenta|cincuenta)/i,
+    // Spanish street prefixes
+    /^(calle|avenida|av|pasaje|camino|carretera|plaza|paseo|bulevar)/i,
+    // Cross-street indicators
+    /^(corner|intersection|esquina|cruce)/i,
+    // Contextual (from our extraction)
+    /\(approximate\)$/i,
+  ];
+  
+  // Check if the address starts with any valid pattern
+  const hasValidStart = VALID_ADDRESS_STARTERS.some(pattern => {
+    if (pattern.source.endsWith('$')) {
+      // Pattern checks entire string (like approximate)
+      return pattern.test(cleaned);
+    }
+    return pattern.test(firstWord) || pattern.test(cleaned);
+  });
+  
+  if (!hasValidStart) {
+    console.log(`[validate-address] REJECTED (doesn't start with number/valid prefix): "${cleaned}"`);
+    return null;
   }
 
   // All checks passed
