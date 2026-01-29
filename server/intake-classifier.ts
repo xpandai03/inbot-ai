@@ -407,9 +407,26 @@ function classifyWithRegex(rawText: string): ClassificationOutput {
 // ============================================================
 
 const STRONG_INTENT_KEYWORDS: Array<{ keywords: RegExp[]; intent: string; department: string }> = [
-  // Pothole / Road Damage
+  // Pothole / Road Damage (EXPANDED - Phase 2 Hardening)
+  // Must match all the ways callers describe potholes/road issues
   {
-    keywords: [/pothole/i, /bache/i, /road\s*damage/i, /street\s*damage/i, /hole\s+in\s+(the\s+)?(road|street)/i],
+    keywords: [
+      /pothole/i,                                           // Direct: "pothole"
+      /pot\s*hole/i,                                        // Spaced: "pot hole"
+      /bache/i,                                             // Spanish: pothole
+      /road\s*(damage|repair|broken|crack|issue|problem|condition)/i,  // "road damage", "road problem", etc.
+      /street\s*(damage|broken|crack|repair|issue|problem)/i,          // "street damage", "street problem", etc.
+      /hole\s*(in|on)\s*(the\s*)?(road|street|pavement)/i,            // "hole in the road", "hole on the street"
+      /big\s*hole/i,                                        // "big hole" (implies road context)
+      /(road|street)\s*(has|with)\s*(a\s*)?(hole|crack|damage)/i,     // "street has a hole"
+      /damaged\s*(road|street|pavement)/i,                  // "damaged road"
+      /bad\s*(road|street)/i,                               // "bad road"
+      /crater/i,                                            // "crater" in road context
+      /bump\s*(in|on)\s*(the\s*)?(road|street)/i,          // "bump in the road"
+      /(road|street)\s+needs?\s+(repair|fixing|work)/i,    // "road needs repair"
+      /hoyo\s*(en\s*)?(la\s*)?(calle|carretera)/i,         // Spanish: hole in street
+      /calle\s*(dañada|rota|en\s*mal\s*estado)/i,          // Spanish: damaged street
+    ],
     intent: "Pothole / Road Damage",
     department: "Public Works",
   },
@@ -486,9 +503,18 @@ function detectStrongIntent(text: string): { intent: string; department: string 
  */
 export async function classifyIntake(input: ClassificationInput): Promise<ClassificationOutput> {
   console.log("[classifier] Classifying intake:", { channel: input.channel, textLength: input.rawText.length });
+  
+  // Log first 500 chars of raw text for debugging classification issues
+  const textPreview = input.rawText.substring(0, 500);
+  console.log(`[classifier] Raw text preview: "${textPreview}${input.rawText.length > 500 ? '...' : ''}"`);
 
   // Pre-check for strong intent keywords
   const strongIntent = detectStrongIntent(input.rawText);
+  if (strongIntent) {
+    console.log(`[classifier] Strong intent PRE-DETECTED: ${strongIntent.intent} → ${strongIntent.department}`);
+  } else {
+    console.log("[classifier] No strong intent keywords detected in raw text");
+  }
 
   // Try LLM classification with timeout
   try {
