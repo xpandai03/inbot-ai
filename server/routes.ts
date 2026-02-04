@@ -316,6 +316,139 @@ export async function registerRoutes(
     }
   });
 
+  // ============================================================
+  // RE-EVALUATION ENDPOINTS (Super Admin Only)
+  // Guarded by REEVALUATE_ENABLED feature flag
+  // ============================================================
+
+  const REEVALUATE_ENABLED = process.env.REEVALUATE_ENABLED === "true";
+
+  // GET /api/records/:id/detail — Full record with transcript + evaluation history
+  app.get("/api/records/:id/detail", conditionalAuth, conditionalSuperAdmin, async (req, res) => {
+    if (!REEVALUATE_ENABLED) {
+      return res.status(404).json({ error: "Not found" });
+    }
+
+    try {
+      const record = await storage.getRecordDetail(req.params.id);
+      if (!record) {
+        return res.status(404).json({ error: "Record not found" });
+      }
+
+      const evaluations = await storage.getEvaluationHistory(req.params.id);
+      res.json({ record, evaluations });
+    } catch (error) {
+      console.error("[routes] Failed to get record detail:", error);
+      res.status(500).json({ error: "Failed to fetch record detail" });
+    }
+  });
+
+  // POST /api/records/:id/re-evaluate — Run re-evaluation pipeline
+  app.post("/api/records/:id/re-evaluate", conditionalAuth, conditionalSuperAdmin, async (req, res) => {
+    if (!REEVALUATE_ENABLED) {
+      return res.status(404).json({ error: "Not found" });
+    }
+
+    try {
+      const record = await storage.getRecordDetail(req.params.id);
+      if (!record) {
+        return res.status(404).json({ error: "Record not found" });
+      }
+
+      if (!record.rawTranscript) {
+        return res.status(422).json({
+          error: "Cannot re-evaluate: no transcript available. This record was created before transcript storage was enabled.",
+        });
+      }
+
+      // Lazy import to avoid circular deps
+      const { reEvaluate, computeDiff } = await import("./re-evaluate");
+
+      const result = await reEvaluate({
+        rawTranscript: record.rawTranscript,
+        channel: record.channel,
+        clientId: record.clientId,
+      });
+
+      // Create candidate evaluation entry
+      const evaluation = await storage.createEvaluationEntry({
+        interactionId: record.id,
+        evaluationType: "re-evaluation",
+        candidateName: result.candidateName,
+        candidateAddress: result.candidateAddress,
+        candidateIntent: result.candidateIntent,
+        candidateDepartment: result.candidateDepartment,
+        candidateSummary: result.candidateSummary,
+        extractionMeta: result.extractionMeta,
+        status: "candidate",
+      });
+
+      const diff = computeDiff(record, evaluation);
+
+      res.json({ evaluation, diff });
+    } catch (error) {
+      console.error("[routes] Re-evaluation failed:", error);
+      res.status(500).json({ error: "Re-evaluation failed" });
+    }
+  });
+
+  // POST /api/records/:id/apply-evaluation — Apply a candidate evaluation
+  app.post("/api/records/:id/apply-evaluation", conditionalAuth, conditionalSuperAdmin, async (req, res) => {
+    if (!REEVALUATE_ENABLED) {
+      return res.status(404).json({ error: "Not found" });
+    }
+
+    try {
+      const { evaluationId } = req.body;
+      if (!evaluationId) {
+        return res.status(400).json({ error: "evaluationId is required" });
+      }
+
+      const appliedBy = req.user?.email || "unknown";
+
+      // Get current record before applying (to detect department change)
+      const currentRecord = await storage.getRecord(req.params.id);
+      if (!currentRecord) {
+        return res.status(404).json({ error: "Record not found" });
+      }
+
+      const { record, evaluation } = await storage.applyEvaluation(
+        evaluationId,
+        req.params.id,
+        appliedBy
+      );
+
+      // Step 11: Email re-routing on department change
+      if (
+        evaluation.candidateDepartment &&
+        evaluation.candidateDepartment !== currentRecord.department
+      ) {
+        console.log(
+          `[re-evaluate] Department changed from "${currentRecord.department}" to "${evaluation.candidateDepartment}" — sending corrected email`
+        );
+        // Fire-and-forget: send email to new department with [Updated] prefix
+        triggerDepartmentEmail({
+          ...record,
+          transcriptSummary: `[Updated] ${record.transcriptSummary}`,
+        }).catch((e) =>
+          console.error("[re-evaluate] Failed to send corrected department email:", e)
+        );
+      }
+
+      res.json({ record, evaluation });
+    } catch (error) {
+      console.error("[routes] Apply evaluation failed:", error);
+      res.status(500).json({ error: "Failed to apply evaluation" });
+    }
+  });
+
+  // GET /api/features — Frontend feature flag check
+  app.get("/api/features", (_req, res) => {
+    res.json({
+      reevaluateEnabled: REEVALUATE_ENABLED,
+    });
+  });
+
   // Store last Vapi payload for debugging
   let lastVapiPayload: { timestamp: string; type: string; callId: string | null; error: string | null; body: unknown; path?: string } | null = null;
 
@@ -538,7 +671,16 @@ export async function registerRoutes(
       }
 
       console.log("[VAPI] Inserting record into database...");
-      const newRecord = await storage.createRecord(validation.data);
+      const newRecord = await storage.createRecord(validation.data, {
+        rawTranscript: rawText || undefined,
+        recordingUrl: callMetadata.recordingUrl || undefined,
+        stereoRecordingUrl: callMetadata.stereoRecordingUrl || undefined,
+        callMetadata: {
+          endedReason: callMetadata.endedReason,
+          analysisSuccess: callMetadata.analysisSuccess,
+          callId,
+        },
+      });
       console.log("[VAPI] === INSERT SUCCESS === ID:", newRecord.id);
 
       // Mark call as processed AFTER successful insert (deduplication)
@@ -579,6 +721,28 @@ export async function registerRoutes(
             transcriptSummary: classification.summary,
           });
           console.log("[VAPI] Background: Record updated with classification");
+
+          // Log initial evaluation
+          try {
+            await storage.createEvaluationEntry({
+              interactionId: newRecord.id,
+              evaluationType: "initial",
+              candidateName: recordFields.name,
+              candidateAddress: recordFields.address,
+              candidateIntent: classification.intent,
+              candidateDepartment: classification.department,
+              candidateSummary: classification.summary,
+              extractionMeta: {
+                classifierMethod: classification.method,
+                channel: "Voice",
+              },
+              status: "applied",
+              appliedAt: new Date().toISOString(),
+              appliedBy: "system",
+            });
+          } catch (evalErr) {
+            console.error("[VAPI] Background: Failed to log initial evaluation:", evalErr);
+          }
 
           // Pass callMetadata to include recording link and transcript in email
           triggerDepartmentEmail({
@@ -711,7 +875,9 @@ export async function registerRoutes(
       throw new Error(`Validation failed: ${JSON.stringify(validation.error.issues)}`);
     }
 
-    const newRecord = await storage.createRecord(validation.data);
+    const newRecord = await storage.createRecord(validation.data, {
+      rawTranscript: issue,
+    });
     console.log(`[TWILIO-GUIDED] COMPLETE phone=*${fromNumber.slice(-4)} recordId=${newRecord.id}`);
 
     // Mark MessageSid as processed after successful insert
@@ -737,6 +903,28 @@ export async function registerRoutes(
           transcriptSummary: classification.summary,
         });
         console.log("[TWILIO-GUIDED] Background: Record updated with classification");
+
+        // Log initial evaluation
+        try {
+          await storage.createEvaluationEntry({
+            interactionId: newRecord.id,
+            evaluationType: "initial",
+            candidateName: name,
+            candidateAddress: address,
+            candidateIntent: classification.intent,
+            candidateDepartment: classification.department,
+            candidateSummary: classification.summary,
+            extractionMeta: {
+              classifierMethod: classification.method,
+              channel: "SMS",
+            },
+            status: "applied",
+            appliedAt: new Date().toISOString(),
+            appliedBy: "system",
+          });
+        } catch (evalErr) {
+          console.error("[TWILIO-GUIDED] Background: Failed to log initial evaluation:", evalErr);
+        }
 
         triggerDepartmentEmail({
           ...newRecord,
@@ -791,7 +979,9 @@ export async function registerRoutes(
         return;
       }
 
-      const newRecord = await storage.createRecord(validation.data);
+      const newRecord = await storage.createRecord(validation.data, {
+        rawTranscript: issue,
+      });
       console.log(`[TWILIO-GUIDED] TIMEOUT_RECORD_CREATED phone=*${session.phoneNumber.slice(-4)} recordId=${newRecord.id}`);
 
       // Background classify
@@ -808,6 +998,28 @@ export async function registerRoutes(
             department: classification.department,
             transcriptSummary: classification.summary,
           });
+
+          // Log initial evaluation
+          try {
+            await storage.createEvaluationEntry({
+              interactionId: newRecord.id,
+              evaluationType: "initial",
+              candidateName: name,
+              candidateAddress: address,
+              candidateIntent: classification.intent,
+              candidateDepartment: classification.department,
+              candidateSummary: classification.summary,
+              extractionMeta: {
+                classifierMethod: classification.method,
+                channel: "SMS",
+              },
+              status: "applied",
+              appliedAt: new Date().toISOString(),
+              appliedBy: "system",
+            });
+          } catch (evalErr) {
+            console.error("[TWILIO-GUIDED] Timeout: Failed to log initial evaluation:", evalErr);
+          }
 
           triggerDepartmentEmail({
             ...newRecord,
@@ -1015,7 +1227,9 @@ export async function registerRoutes(
 
       // INSERT into database
       console.log("[TWILIO] INSERT ATTEMPTED - calling storage.createRecord...");
-      const newRecord = await storage.createRecord(validation.data);
+      const newRecord = await storage.createRecord(validation.data, {
+        rawTranscript: messageBody || undefined,
+      });
       console.log(`[TWILIO] INSERT SUCCEEDED - ID: ${newRecord.id}`);
 
       // IDEMPOTENCY: Mark as processed ONLY AFTER successful insert
@@ -1048,6 +1262,32 @@ export async function registerRoutes(
             transcriptSummary: classification.summary,
           });
           console.log("[TWILIO] Background: Record updated with classification");
+
+          // Log initial evaluation
+          try {
+            await storage.createEvaluationEntry({
+              interactionId: newRecord.id,
+              evaluationType: "initial",
+              candidateName: extractionResult.name,
+              candidateAddress: extractionResult.address,
+              candidateIntent: classification.intent,
+              candidateDepartment: classification.department,
+              candidateSummary: classification.summary,
+              extractionMeta: {
+                classifierMethod: classification.method,
+                channel: "SMS",
+                nameSource: extractionResult.nameSource,
+                addressSource: extractionResult.addressSource,
+                completeness: extractionResult.completeness,
+                addressIsComplete: extractionResult.addressIsComplete,
+              },
+              status: "applied",
+              appliedAt: new Date().toISOString(),
+              appliedBy: "system",
+            });
+          } catch (evalErr) {
+            console.error("[TWILIO] Background: Failed to log initial evaluation:", evalErr);
+          }
 
           triggerDepartmentEmail({
             ...newRecord,

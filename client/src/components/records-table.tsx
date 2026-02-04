@@ -22,15 +22,17 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Phone, MessageSquare, Trash2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { Link } from "wouter";
 import type { IntakeRecord } from "@shared/schema";
 
 interface RecordsTableProps {
   records: IntakeRecord[];
   showCost?: boolean;
   isLoading?: boolean;
+  isSuperAdmin?: boolean;
 }
 
-export function RecordsTable({ records, showCost = false, isLoading = false }: RecordsTableProps) {
+export function RecordsTable({ records, showCost = false, isLoading = false, isSuperAdmin = false }: RecordsTableProps) {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [recordToDelete, setRecordToDelete] = useState<IntakeRecord | null>(null);
   const queryClient = useQueryClient();
@@ -158,7 +160,16 @@ export function RecordsTable({ records, showCost = false, isLoading = false }: R
               data-testid={`row-record-${record.id}`}
             >
               <TableCell className={`${cellClass} font-medium text-foreground truncate`} title={record.name}>
-                {record.name}
+                {isSuperAdmin ? (
+                  <Link
+                    href={`/records/${record.id}`}
+                    className="hover:underline hover:text-primary cursor-pointer"
+                  >
+                    {record.name}
+                  </Link>
+                ) : (
+                  record.name
+                )}
               </TableCell>
               <TableCell className={`${cellClass} text-xs text-muted-foreground tabular-nums truncate`}>
                 {record.phone || (record.channel === "Voice" ? "(Web)" : "-")}

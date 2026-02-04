@@ -34,6 +34,7 @@ export interface ClassificationOutput {
   intent: string;
   department: string;
   summary: string;
+  method: "llm" | "regex";
 }
 
 // Hardcoded Phase 1 categories
@@ -139,6 +140,7 @@ async function classifyWithLLM(input: ClassificationInput): Promise<Classificati
       intent: validIntent,
       department: validDepartment,
       summary: parsed.summary,
+      method: "llm" as const,
     };
   } catch (error) {
     console.error("[classifier] LLM classification error:", error);
@@ -443,7 +445,7 @@ function classifyWithRegex(rawText: string): ClassificationOutput {
 
   console.log("[classifier] Regex fallback classification:", { intent, department, intentPriority: bestIntentPriority, deptPriority: bestDeptPriority });
 
-  return { intent, department, summary };
+  return { intent, department, summary, method: "regex" as const };
 }
 
 // ============================================================
@@ -650,6 +652,7 @@ export async function classifyIntake(input: ClassificationInput): Promise<Classi
           intent: strongIntent.intent,
           department: strongIntent.department,
           summary: llmResult.summary,
+          method: "llm",
         };
       }
       return llmResult;
@@ -670,6 +673,7 @@ export async function classifyIntake(input: ClassificationInput): Promise<Classi
       intent: strongIntent.intent,
       department: strongIntent.department,
       summary: regexResult.summary,
+      method: "regex",
     };
   }
   

@@ -1,10 +1,22 @@
-import type { IntakeRecord, InsertIntakeRecord, DashboardStats, Client, DepartmentEmail } from "@shared/schema";
+import type {
+  IntakeRecord,
+  InsertIntakeRecord,
+  DashboardStats,
+  Client,
+  DepartmentEmail,
+  IntakeRecordDetail,
+  EvaluationEntry,
+  InsertEvaluationEntry,
+} from "@shared/schema";
 import { randomUUID } from "crypto";
 import {
   getSupabaseClient,
   dbToIntakeRecord,
+  dbToIntakeRecordDetail,
+  dbToEvaluationEntry,
   intakeRecordToDB,
   type DBInteraction,
+  type DBEvaluationHistory,
 } from "./supabase";
 
 export interface DepartmentEmailConfig {
@@ -12,10 +24,17 @@ export interface DepartmentEmailConfig {
   cc_email: string | null;
 }
 
+export interface TranscriptMeta {
+  rawTranscript?: string;
+  recordingUrl?: string;
+  stereoRecordingUrl?: string;
+  callMetadata?: Record<string, unknown>;
+}
+
 export interface IStorage {
   getRecords(clientId?: string): Promise<IntakeRecord[]>;
   getRecord(id: string): Promise<IntakeRecord | undefined>;
-  createRecord(record: InsertIntakeRecord): Promise<IntakeRecord>;
+  createRecord(record: InsertIntakeRecord, meta?: TranscriptMeta): Promise<IntakeRecord>;
   updateRecord(id: string, updates: Partial<InsertIntakeRecord>): Promise<IntakeRecord | undefined>;
   deleteRecord(id: string, clientId?: string): Promise<boolean>;
   getStats(clientId?: string): Promise<DashboardStats>;
@@ -35,6 +54,11 @@ export interface IStorage {
   createDepartmentEmail(clientId: string, department: string, email: string, ccEmail?: string | null): Promise<DepartmentEmail>;
   updateDepartmentEmail(id: string, clientId: string, email: string, ccEmail?: string | null): Promise<DepartmentEmail | null>;
   deleteDepartmentEmail(id: string, clientId: string): Promise<boolean>;
+  // Re-evaluation methods
+  getRecordDetail(id: string): Promise<IntakeRecordDetail | undefined>;
+  createEvaluationEntry(entry: InsertEvaluationEntry): Promise<EvaluationEntry>;
+  getEvaluationHistory(interactionId: string): Promise<EvaluationEntry[]>;
+  applyEvaluation(evaluationId: string, interactionId: string, appliedBy: string): Promise<{ record: IntakeRecord; evaluation: EvaluationEntry }>;
 }
 
 const clients: Client[] = [
@@ -283,6 +307,27 @@ export class MemStorage implements IStorage {
     console.warn("[MemStorage] deleteDepartmentEmail not available in memory mode");
     return false;
   }
+
+  // Re-evaluation stubs (require Supabase)
+  async getRecordDetail(_id: string): Promise<IntakeRecordDetail | undefined> {
+    console.warn("[MemStorage] getRecordDetail not available in memory mode");
+    return undefined;
+  }
+
+  async createEvaluationEntry(_entry: InsertEvaluationEntry): Promise<EvaluationEntry> {
+    console.warn("[MemStorage] createEvaluationEntry not available in memory mode");
+    throw new Error("Evaluation entry creation not available in memory mode");
+  }
+
+  async getEvaluationHistory(_interactionId: string): Promise<EvaluationEntry[]> {
+    console.warn("[MemStorage] getEvaluationHistory not available in memory mode");
+    return [];
+  }
+
+  async applyEvaluation(_evaluationId: string, _interactionId: string, _appliedBy: string): Promise<{ record: IntakeRecord; evaluation: EvaluationEntry }> {
+    console.warn("[MemStorage] applyEvaluation not available in memory mode");
+    throw new Error("Apply evaluation not available in memory mode");
+  }
 }
 
 export class SupabaseStorage implements IStorage {
@@ -333,11 +378,11 @@ export class SupabaseStorage implements IStorage {
     return data ? dbToIntakeRecord(data as DBInteraction) : undefined;
   }
 
-  async createRecord(insertRecord: InsertIntakeRecord): Promise<IntakeRecord> {
+  async createRecord(insertRecord: InsertIntakeRecord, meta?: TranscriptMeta): Promise<IntakeRecord> {
     console.log("[SupabaseStorage.createRecord] === INSERTING RECORD ===");
     console.log("[SupabaseStorage.createRecord] Input:", JSON.stringify(insertRecord, null, 2));
 
-    const dbRecord = intakeRecordToDB(insertRecord);
+    const dbRecord = intakeRecordToDB(insertRecord, meta);
     console.log("[SupabaseStorage.createRecord] DB record:", JSON.stringify(dbRecord, null, 2));
 
     const { data, error } = await this.supabase
@@ -654,6 +699,109 @@ export class SupabaseStorage implements IStorage {
     }
 
     return true;
+  }
+
+  // ============================================================
+  // Re-evaluation methods
+  // ============================================================
+
+  async getRecordDetail(id: string): Promise<IntakeRecordDetail | undefined> {
+    const { data, error } = await this.supabase
+      .from("interactions")
+      .select("*")
+      .eq("id", id)
+      .single();
+
+    if (error) {
+      if (error.code === "PGRST116") return undefined;
+      console.error("[SupabaseStorage.getRecordDetail]", error);
+      throw new Error(`Failed to fetch record detail: ${error.message}`);
+    }
+
+    return data ? dbToIntakeRecordDetail(data as DBInteraction) : undefined;
+  }
+
+  async createEvaluationEntry(entry: InsertEvaluationEntry): Promise<EvaluationEntry> {
+    const dbRow = {
+      interaction_id: entry.interactionId,
+      evaluation_type: entry.evaluationType,
+      candidate_name: entry.candidateName ?? null,
+      candidate_address: entry.candidateAddress ?? null,
+      candidate_intent: entry.candidateIntent ?? null,
+      candidate_department: entry.candidateDepartment ?? null,
+      candidate_summary: entry.candidateSummary ?? null,
+      extraction_meta: entry.extractionMeta ?? {},
+      status: entry.status,
+      applied_at: entry.appliedAt ?? null,
+      applied_by: entry.appliedBy ?? null,
+    };
+
+    const { data, error } = await this.supabase
+      .from("evaluation_history")
+      .insert(dbRow)
+      .select()
+      .single();
+
+    if (error) {
+      console.error("[SupabaseStorage.createEvaluationEntry]", error);
+      throw new Error(`Failed to create evaluation entry: ${error.message}`);
+    }
+
+    return dbToEvaluationEntry(data as DBEvaluationHistory);
+  }
+
+  async getEvaluationHistory(interactionId: string): Promise<EvaluationEntry[]> {
+    const { data, error } = await this.supabase
+      .from("evaluation_history")
+      .select("*")
+      .eq("interaction_id", interactionId)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error("[SupabaseStorage.getEvaluationHistory]", error);
+      throw new Error(`Failed to fetch evaluation history: ${error.message}`);
+    }
+
+    return (data as DBEvaluationHistory[]).map(dbToEvaluationEntry);
+  }
+
+  async applyEvaluation(
+    evaluationId: string,
+    interactionId: string,
+    appliedBy: string
+  ): Promise<{ record: IntakeRecord; evaluation: EvaluationEntry }> {
+    // Call the Postgres RPC function for transactional safety
+    const { data: rpcResult, error: rpcError } = await this.supabase
+      .rpc("apply_evaluation", {
+        eval_id: evaluationId,
+        applied_by_user: appliedBy,
+      });
+
+    if (rpcError) {
+      console.error("[SupabaseStorage.applyEvaluation] RPC error:", rpcError);
+      throw new Error(`Failed to apply evaluation: ${rpcError.message}`);
+    }
+
+    // Fetch the updated record and evaluation
+    const record = await this.getRecord(interactionId);
+    if (!record) {
+      throw new Error("Record not found after applying evaluation");
+    }
+
+    const { data: evalData, error: evalError } = await this.supabase
+      .from("evaluation_history")
+      .select("*")
+      .eq("id", evaluationId)
+      .single();
+
+    if (evalError) {
+      throw new Error(`Failed to fetch applied evaluation: ${evalError.message}`);
+    }
+
+    return {
+      record,
+      evaluation: dbToEvaluationEntry(evalData as DBEvaluationHistory),
+    };
   }
 }
 

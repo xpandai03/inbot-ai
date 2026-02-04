@@ -72,3 +72,42 @@ export const updateDepartmentEmailSchema = z.object({
 export type DepartmentEmail = z.infer<typeof departmentEmailSchema>;
 export type InsertDepartmentEmail = z.infer<typeof insertDepartmentEmailSchema>;
 export type UpdateDepartmentEmail = z.infer<typeof updateDepartmentEmailSchema>;
+
+// ============================================================
+// Re-evaluation: Extended record detail + evaluation history
+// ============================================================
+
+export const intakeRecordDetailSchema = intakeRecordSchema.extend({
+  rawTranscript: z.string().nullable().optional(),
+  recordingUrl: z.string().nullable().optional(),
+  stereoRecordingUrl: z.string().nullable().optional(),
+  callMetadata: z.record(z.unknown()).nullable().optional(),
+  updatedAt: z.string().nullable().optional(),
+});
+
+export type IntakeRecordDetail = z.infer<typeof intakeRecordDetailSchema>;
+
+export const evaluationEntrySchema = z.object({
+  id: z.string(),
+  interactionId: z.string(),
+  evaluationType: z.enum(["initial", "re-evaluation"]),
+  candidateName: z.string().nullable().optional(),
+  candidateAddress: z.string().nullable().optional(),
+  candidateIntent: z.string().nullable().optional(),
+  candidateDepartment: z.string().nullable().optional(),
+  candidateSummary: z.string().nullable().optional(),
+  extractionMeta: z.record(z.unknown()).default({}),
+  status: z.enum(["candidate", "applied", "superseded"]),
+  appliedAt: z.string().nullable().optional(),
+  appliedBy: z.string().nullable().optional(),
+  createdAt: z.string(),
+});
+
+export type EvaluationEntry = z.infer<typeof evaluationEntrySchema>;
+
+export const insertEvaluationEntrySchema = evaluationEntrySchema.omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertEvaluationEntry = z.infer<typeof insertEvaluationEntrySchema>;

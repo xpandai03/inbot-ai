@@ -353,6 +353,7 @@ export default function Dashboard() {
           records={filteredRecords}
           showCost={true}
           isLoading={isLoading}
+          isSuperAdmin={isSuperAdmin}
         />
 
         <BroadcastModal
