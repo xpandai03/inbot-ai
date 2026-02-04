@@ -82,6 +82,8 @@ The summary should be 1 sentence describing the citizen's issue.
 
 Use "Safety Concern / Suspicious Activity" for crime reports, suspicious persons, break-ins, vandalism, trespassing, or safety hazards. Route these to "Public Safety".
 
+Use "Water / Utilities" for hydrants (fire hydrants), water leaks, pipe breaks, flooding from infrastructure, water running across roads, sewer issues, and any water/gas/electric outage. Route these to "Public Works".
+
 If the input is unclear or doesn't fit any category, use "General Inquiry" for intent and "General" for department.`;
 
 /**
@@ -210,21 +212,31 @@ const INTENT_PATTERNS: Array<{ pattern: RegExp; intent: string; priority: number
 
   // WATER / UTILITIES - Require utility-specific context words
   // Prevents "water pooling" from matching (pooling is not a utility issue word)
+  // Phase 3 Hardening: Expanded hydrant/leak compound patterns
   // English
   { pattern: /water\s*(main|line|pipe|meter|pressure|service|shut|leak|break|burst)/i, intent: "Water / Utilities", priority: 90 },
-  { pattern: /(fire\s*)?hydrant/i, intent: "Water / Utilities", priority: 90 },
+  { pattern: /(fire\s*)?hydrant/i, intent: "Water / Utilities", priority: 95 },
+  { pattern: /hydrant\s*(leak|broken|damage|open|running|spray|burst|gush)/i, intent: "Water / Utilities", priority: 100 },
+  { pattern: /(broken|damaged|leaking|busted|open)\s*(fire\s*)?hydrant/i, intent: "Water / Utilities", priority: 100 },
+  { pattern: /leak(ing|s|ed)?\s*(water|hydrant|pipe|main)/i, intent: "Water / Utilities", priority: 95 },
+  { pattern: /water\s*(leak|running|gush|spray|flood|pour)\w*\s*(across|down|on|in|from)/i, intent: "Water / Utilities", priority: 90 },
+  { pattern: /water\s*(running|flowing|pouring)\s*(across|down|into|on)\s*(the\s*)?(street|road|sidewalk)/i, intent: "Water / Utilities", priority: 95 },
   { pattern: /sewer\s*(line|backup|overflow|smell|issue|problem)/i, intent: "Water / Utilities", priority: 90 },
   { pattern: /(gas|electric)\s*(leak|outage|issue|problem|smell)/i, intent: "Water / Utilities", priority: 90 },
   { pattern: /utility\s*(issue|problem|outage|bill)/i, intent: "Water / Utilities", priority: 85 },
   { pattern: /pipe\s*(leak|burst|broken|freeze|frozen)/i, intent: "Water / Utilities", priority: 85 },
   { pattern: /(storm\s*)?drain\s*(clog|block|backup|overflow)/i, intent: "Water / Utilities", priority: 80 },
-  { pattern: /flood(ing|ed)?\s*(from|in|my)/i, intent: "Water / Utilities", priority: 75 },
+  { pattern: /flood(ing|ed)?\s*(from|in|my|the|across)/i, intent: "Water / Utilities", priority: 80 },
   { pattern: /no\s*(water|power|electricity|gas)/i, intent: "Water / Utilities", priority: 85 },
-  // Spanish: water/utilities
+  // Spanish: water/utilities (expanded hydrant/leak)
   { pattern: /tuber[ií]a\s*(rota|da[ñn]ada|con\s*fuga)/i, intent: "Water / Utilities", priority: 90 },  // broken/leaking pipe
   { pattern: /fuga\s*(de\s*)?(agua|gas)/i, intent: "Water / Utilities", priority: 90 },  // water/gas leak
   { pattern: /alcantarilla/i, intent: "Water / Utilities", priority: 90 },  // sewer
-  { pattern: /hidrante/i, intent: "Water / Utilities", priority: 90 },  // hydrant
+  { pattern: /hidrante\s*(roto|da[ñn]ado|con\s*fuga|abierto|goteando)/i, intent: "Water / Utilities", priority: 100 },  // broken/leaking hydrant
+  { pattern: /hidrante/i, intent: "Water / Utilities", priority: 95 },  // hydrant
+  { pattern: /goteando|gotea/i, intent: "Water / Utilities", priority: 85 },  // dripping/leaking
+  { pattern: /inundaci[oó]n|inundado/i, intent: "Water / Utilities", priority: 85 },  // flooding/flooded
+  { pattern: /agua\s*(corriendo|saliendo|brotando|regando)/i, intent: "Water / Utilities", priority: 90 },  // water running/coming out
   { pattern: /no\s*hay\s*(agua|luz|gas)/i, intent: "Water / Utilities", priority: 85 },  // no water/power/gas
   { pattern: /medidor\s*(de\s*)?(agua|luz|gas)/i, intent: "Water / Utilities", priority: 85 },  // water/electric/gas meter
   { pattern: /corte\s*(de\s*)?(agua|luz|gas)/i, intent: "Water / Utilities", priority: 85 },  // service cut
@@ -335,6 +347,9 @@ const DEPARTMENT_PATTERNS: Array<{ pattern: RegExp; department: string; priority
   { pattern: /street\s*light|lamp\s*post|light\s*pole/i, department: "Public Works", priority: 90 },
   { pattern: /traffic\s*(light|sign|signal)/i, department: "Public Works", priority: 90 },
   { pattern: /storm\s*drain|sewer|water\s*main/i, department: "Public Works", priority: 85 },
+  { pattern: /(fire\s*)?hydrant/i, department: "Public Works", priority: 90 },
+  { pattern: /(water|pipe)\s*(leak|burst|break|running|gush)/i, department: "Public Works", priority: 85 },
+  { pattern: /flood(ing|ed)/i, department: "Public Works", priority: 80 },
   { pattern: /road\s*(sign|marking|line)/i, department: "Public Works", priority: 80 },
   // Spanish
   { pattern: /bache|hoyo\s*(en\s*)?(la\s*)?(calle|carretera)/i, department: "Public Works", priority: 100 },  // pothole
@@ -510,16 +525,26 @@ const STRONG_INTENT_KEYWORDS: Array<{ keywords: RegExp[]; intent: string; depart
     intent: "Streetlight Issue",
     department: "Public Works",
   },
-  // Water / Utilities (EXPANDED Spanish)
+  // Water / Utilities (EXPANDED - Phase 3 Hydrant/Leak Hardening)
   {
     keywords: [
-      /water\s*(leak|main|pipe|meter)/i, 
-      /hydrant/i, 
-      /sewer/i, 
+      /water\s*(leak|main|pipe|meter)/i,
+      /hydrant/i,                                // "hydrant" alone is enough
+      /fire\s*hydrant/i,                         // "fire hydrant"
+      /(broken|damaged|leaking|busted)\s*(fire\s*)?hydrant/i, // "broken fire hydrant"
+      /hydrant\s*(leak|broken|damage|running|spray|gush)/i,   // "hydrant leaking"
+      /leak(ing)?\s*(water|hydrant|pipe)/i,      // "leaking water", "leaking hydrant"
+      /water\s*(running|flowing|pouring)\s*(across|down|into|on)/i, // "water running across"
+      /water\s*(leak|running|gush|spray|flood|pour)/i,              // "water leak", "water flooding"
+      /sewer/i,
       /fuga\s*(de\s*)?(agua|gas)/i,             // "fuga de agua/gas"
       /tuber[ií]a/i,                            // "tubería"
       /hidrante/i,                              // "hidrante"
+      /hidrante\s*(roto|da[ñn]ado|goteando|abierto)/i, // "hidrante roto"
       /alcantarilla/i,                          // "alcantarilla" (sewer)
+      /goteando|gotea/i,                        // "goteando" (dripping/leaking)
+      /inundaci[oó]n|inundado/i,                // flooding/flooded
+      /agua\s*(corriendo|saliendo|brotando)/i,  // "agua corriendo" (water running)
       /agua\s*(no\s*hay|sin|cortada|falta)/i,   // "no hay agua", "sin agua"
       /no\s*(hay|tengo|tiene)\s*agua/i,         // "no hay agua", "no tengo agua"
       /problema\s*(de|con)\s*(el\s*)?(agua|drenaje)/i, // "problema con el agua"
@@ -645,6 +670,9 @@ export async function classifyIntake(input: ClassificationInput): Promise<Classi
     ]);
 
     if (llmResult) {
+      // Phase 3 Debug: Log LLM decision vs strong keyword for observability
+      console.log(`[classifier] LLM decided: intent="${llmResult.intent}" dept="${llmResult.department}" | Strong keyword: ${strongIntent ? `"${strongIntent.intent}"` : "none"}`);
+
       // Phase 1 Final Hardening: Override "General Inquiry" if strong keywords present
       if (llmResult.intent === "General Inquiry" && strongIntent) {
         console.log(`[classifier] OVERRIDE: LLM returned "General Inquiry" but strong keyword found → ${strongIntent.intent}`);

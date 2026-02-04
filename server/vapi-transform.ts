@@ -1241,20 +1241,43 @@ export function extractName(
   
   // Source A: artifact.messages (structured user messages)
   const userMessages = messages.filter(m => m.role === "user");
-  
+
   // DEBUG: Log all user messages to see what we're working with
   console.log(`[extractName] Processing ${userMessages.length} user messages:`);
   userMessages.forEach((msg, idx) => {
     const preview = msg.message.substring(0, 100);
-    console.log(`[extractName]   msg[${idx}]: "${preview}${msg.message.length > 100 ? '...' : ''}"`);
+    console.log(`[extractName]   user-msg[${idx}]: "${preview}${msg.message.length > 100 ? '...' : ''}"`);
     const candidates = extractAllNameCandidates(msg.message, idx);
     if (candidates.length > 0) {
       console.log(`[extractName]   → Found ${candidates.length} candidates: ${candidates.map(c => `"${c.value}" (${c.pattern}, score=${c.score})`).join(', ')}`);
     }
     allCandidates.push(...candidates);
   });
-  
-  console.log(`[extractName] Total candidates from messages: ${allCandidates.length}`);
+
+  console.log(`[extractName] Total candidates from user messages: ${allCandidates.length}`);
+
+  // Source A2: bot messages (Phase 3 Hardening)
+  // Assistant confirmations like "Got it, Tony Stark" contain clean name mentions
+  const botMessages = messages.filter(m => m.role === "bot");
+  if (botMessages.length > 0) {
+    console.log(`[extractName] Scanning ${botMessages.length} bot messages for name confirmations:`);
+    botMessages.forEach((msg, idx) => {
+      const preview = msg.message.substring(0, 100);
+      console.log(`[extractName]   bot-msg[${idx}]: "${preview}${msg.message.length > 100 ? '...' : ''}"`);
+      const candidates = extractAllNameCandidates(msg.message, 800 + idx);
+      // De-duplicate against existing candidates, slightly lower priority
+      for (const c of candidates) {
+        const isDuplicate = allCandidates.some(existing =>
+          existing.value.toLowerCase() === c.value.toLowerCase()
+        );
+        if (!isDuplicate) {
+          c.score -= 10; // Slightly lower score for bot-sourced names
+          allCandidates.push(c);
+        }
+      }
+    });
+    console.log(`[extractName] Total candidates after bot messages: ${allCandidates.length}`);
+  }
   
   // Source B: transcript string (fallback - may have different segmentation)
   if (transcript) {
@@ -1946,95 +1969,104 @@ function extractAddressFromText(text: string): { address: string | null; pattern
  */
 export function extractAddress(messages: VapiMessage[], transcript?: string): { address: string; source: string } {
   console.log("[extractAddress] ====== ADDRESS EXTRACTION START ======");
-  
+
   const userMessages = messages.filter(m => m.role === "user");
-  console.log(`[extractAddress] Processing ${userMessages.length} user messages`);
-  
+  // Phase 3 Hardening: Also scan bot messages (assistant confirmations often
+  // contain the clearest address mention, e.g. "You said 2233 Fantastic Street")
+  const allMessages = messages.filter(m => m.role === "user" || m.role === "bot");
+  console.log(`[extractAddress] Processing ${userMessages.length} user messages, ${allMessages.length} total (user+bot)`);
+
   // ============================================================
   // PHASE 2 HARDENING: Two-phase extraction
   // ============================================================
   // Phase 1: Look for SPECIFIC addresses (numeric, spoken, prefix patterns)
+  //   Pass A: user messages (highest trust)
+  //   Pass B: bot messages (assistant confirmations)
+  //   Pass C: transcript string (contains all turns interleaved)
   // Phase 2: Only if Phase 1 fails, accept contextual/approximate addresses
-  // This prevents "my street" from being captured when a specific address
-  // is mentioned later in the conversation.
   // ============================================================
-  
+
   let contextualCandidate: { address: string; source: string } | null = null;
-  
-  // Phase 1: Search ALL messages for specific addresses first
+
+  // Helper: try extracting from a text block, return specific address or save contextual
+  const tryExtract = (text: string, sourceLabel: string): { address: string; source: string } | null => {
+    const result = extractAddressFromText(text);
+    if (!result.address) return null;
+
+    const isContextual = result.pattern.startsWith("contextual-") || result.pattern === "cross-street";
+    const normalized = normalizeSpokenAddress(result.address);
+    const validated = validateExtractedAddress(normalized);
+
+    if (!validated) {
+      console.log(`[extractAddress] → Validation REJECTED: "${normalized}" from ${sourceLabel}`);
+      return null;
+    }
+
+    if (isContextual) {
+      if (!contextualCandidate) {
+        contextualCandidate = { address: validated, source: `${sourceLabel}/${result.pattern}` };
+        console.log(`[extractAddress] → Saved contextual fallback: "${validated}" from ${sourceLabel}`);
+      }
+      return null;
+    }
+
+    return { address: validated, source: `${sourceLabel}/${result.pattern}` };
+  };
+
+  // Pass A: Search USER messages for specific addresses
   for (let i = 0; i < userMessages.length; i++) {
     const msg = userMessages[i];
     const preview = msg.message.substring(0, 150);
-    console.log(`[extractAddress] msg[${i}]: "${preview}${msg.message.length > 150 ? '...' : ''}"`);
-    
-    const result = extractAddressFromText(msg.message);
-    console.log(`[extractAddress] → Pattern result: ${result.pattern}, address: ${result.address ? `"${result.address}"` : 'null'}`);
-    
-    if (result.address) {
-      // Check if this is a contextual/approximate pattern
-      const isContextual = result.pattern.startsWith("contextual-") || result.pattern === "cross-street";
-      
-      // Normalize spoken numbers → digits
-      const normalized = normalizeSpokenAddress(result.address);
-      console.log(`[extractAddress] → Normalized: "${normalized}" (contextual: ${isContextual})`);
-      
-      // Validate before accepting
-      const validated = validateExtractedAddress(normalized);
-      if (validated) {
-        if (isContextual) {
-          // Save contextual as fallback, keep searching for specific address
-          if (!contextualCandidate) {
-            contextualCandidate = { address: validated, source: `messages/${result.pattern}` };
-            console.log(`[extractAddress] → Saved as contextual fallback, continuing search for specific address`);
-          }
-        } else {
-          // Found specific address - return immediately
-          console.log(`[extractAddress] ====== FOUND SPECIFIC ADDRESS: "${validated}" (source: messages/${result.pattern}) ======`);
-          return { address: validated, source: `messages/${result.pattern}` };
-        }
-      } else {
-        console.log(`[extractAddress] → Validation REJECTED normalized address`);
-      }
+    console.log(`[extractAddress] user-msg[${i}]: "${preview}${msg.message.length > 150 ? '...' : ''}"`);
+
+    const found = tryExtract(msg.message, "user-msg");
+    if (found) {
+      console.log(`[extractAddress] ====== FOUND SPECIFIC ADDRESS: "${found.address}" (source: ${found.source}) ======`);
+      return found;
     }
   }
-  console.log("[extractAddress] No specific address found in messages, trying transcript...");
+  console.log("[extractAddress] No specific address in user messages");
 
-  // Try transcript for specific addresses
+  // Pass B: Search BOT messages for specific addresses (assistant confirmations)
+  // Phase 3 Hardening: Bot turns often contain the clearest address when the
+  // system prompt confirms details ("You said 2233 Fantastic Street...")
+  const botMessages = messages.filter(m => m.role === "bot");
+  if (botMessages.length > 0) {
+    console.log(`[extractAddress] Scanning ${botMessages.length} bot messages for address confirmations...`);
+    for (let i = 0; i < botMessages.length; i++) {
+      const msg = botMessages[i];
+      const preview = msg.message.substring(0, 150);
+      console.log(`[extractAddress] bot-msg[${i}]: "${preview}${msg.message.length > 150 ? '...' : ''}"`);
+
+      const found = tryExtract(msg.message, "bot-msg");
+      if (found) {
+        console.log(`[extractAddress] ====== FOUND SPECIFIC ADDRESS IN BOT CONFIRMATION: "${found.address}" (source: ${found.source}) ======`);
+        return found;
+      }
+    }
+    console.log("[extractAddress] No specific address in bot messages");
+  }
+
+  // Pass C: Try transcript for specific addresses (contains all turns interleaved)
   if (transcript) {
     const transcriptPreview = transcript.substring(0, 300);
     console.log(`[extractAddress] Transcript preview: "${transcriptPreview}${transcript.length > 300 ? '...' : ''}"`);
-    
-    const result = extractAddressFromText(transcript);
-    console.log(`[extractAddress] → Transcript pattern result: ${result.pattern}, address: ${result.address ? `"${result.address}"` : 'null'}`);
-    
-    if (result.address) {
-      const isContextual = result.pattern.startsWith("contextual-") || result.pattern === "cross-street";
-      const normalized = normalizeSpokenAddress(result.address);
-      console.log(`[extractAddress] → Normalized: "${normalized}" (contextual: ${isContextual})`);
-      
-      const validated = validateExtractedAddress(normalized);
-      if (validated) {
-        if (isContextual) {
-          if (!contextualCandidate) {
-            contextualCandidate = { address: validated, source: `transcript/${result.pattern}` };
-            console.log(`[extractAddress] → Saved as contextual fallback`);
-          }
-        } else {
-          console.log(`[extractAddress] ====== FOUND SPECIFIC ADDRESS: "${validated}" (source: transcript/${result.pattern}) ======`);
-          return { address: validated, source: `transcript/${result.pattern}` };
-        }
-      } else {
-        console.log(`[extractAddress] → Validation REJECTED normalized address`);
-      }
+
+    const found = tryExtract(transcript, "transcript");
+    if (found) {
+      console.log(`[extractAddress] ====== FOUND SPECIFIC ADDRESS: "${found.address}" (source: ${found.source}) ======`);
+      return found;
     }
   } else {
     console.log("[extractAddress] No transcript provided");
   }
 
   // Phase 2: If no specific address found, use contextual fallback
-  if (contextualCandidate) {
-    console.log(`[extractAddress] ====== USING CONTEXTUAL FALLBACK: "${contextualCandidate.address}" ======`);
-    return contextualCandidate;
+  // Note: contextualCandidate is mutated inside tryExtract() closure, so TS needs the assertion
+  const fallback = contextualCandidate as { address: string; source: string } | null;
+  if (fallback) {
+    console.log(`[extractAddress] ====== USING CONTEXTUAL FALLBACK: "${fallback.address}" ======`);
+    return fallback;
   }
 
   console.log("[extractAddress] ====== NO ADDRESS FOUND - returning 'Not provided' ======");
@@ -2042,14 +2074,26 @@ export function extractAddress(messages: VapiMessage[], transcript?: string): { 
 }
 
 /**
- * Build raw issue text from user messages
+ * Build raw issue text from messages for classification.
+ * Phase 3 Hardening: Include both user AND bot messages to match re-eval parity.
+ * Bot confirmations often restate/clarify the issue (e.g. "broken fire hydrant leaking water").
+ * User messages listed first (primary), bot messages appended (context).
  */
 export function buildRawIssueText(messages: VapiMessage[]): string {
-  return messages
+  const userText = messages
     .filter(m => m.role === "user")
     .map(m => m.message)
     .join(" ")
-    .trim() || "No issue description provided";
+    .trim();
+
+  const botText = messages
+    .filter(m => m.role === "bot")
+    .map(m => m.message)
+    .join(" ")
+    .trim();
+
+  const combined = [userText, botText].filter(Boolean).join(" ").trim();
+  return combined || "No issue description provided";
 }
 
 // NOTE: classifyDepartment and classifyIntent have been moved to
@@ -2136,14 +2180,21 @@ export function transformVapiToIntakeRecord(payload: VapiWebhookPayload): Partia
   const language = detectLanguage(rawMessages);
 
   // Build raw text from multiple sources (uses RAW - for LLM classification)
-  // We want original text for classification, not cleaned text
+  // Phase 3 Hardening: Now includes bot messages for classification parity with re-eval
+  const userMsgCount = rawMessages.filter(m => m.role === "user").length;
+  const botMsgCount = rawMessages.filter(m => m.role === "bot").length;
   let rawIssueText = buildRawIssueText(rawMessages);
+  let classificationSource = `messages(user=${userMsgCount},bot=${botMsgCount})`;
   if (!rawIssueText || rawIssueText === "No issue description provided") {
     rawIssueText = rawTranscript;
+    classificationSource = "rawTranscript";
   }
   if (!rawIssueText && msg.analysis?.summary) {
     rawIssueText = msg.analysis.summary;
+    classificationSource = "analysis.summary";
   }
+  console.log(`[vapi-transform] Classification input source: ${classificationSource}`);
+  console.log(`[vapi-transform] Classification text preview: "${(rawIssueText || "").substring(0, 300)}${(rawIssueText || "").length > 300 ? '...' : ''}"`);
 
   // Get phone number from FULL payload
   const phone = extractPhoneNumber(payload);

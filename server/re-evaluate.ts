@@ -82,20 +82,27 @@ async function reEvaluateSms(input: ReEvaluationInput): Promise<ReEvaluationOutp
 async function reEvaluateVoice(input: ReEvaluationInput): Promise<ReEvaluationOutput> {
   // Step 1: Clean transcript for extraction
   const cleanedTranscript = cleanTranscriptForExtraction(input.rawTranscript);
+  console.log(`[re-evaluate] Voice: transcript length=${input.rawTranscript.length}, cleaned=${cleanedTranscript.length}`);
+  console.log(`[re-evaluate] Voice: using EMPTY messages array (transcript-only path)`);
 
   // Step 2: Extract address (empty messages array → uses transcript-only path)
   const emptyMessages: VapiMessage[] = [];
   const { address, source: addressSource } = extractAddress(emptyMessages, cleanedTranscript);
+  console.log(`[re-evaluate] Voice: address="${address}" source="${addressSource}"`);
 
   // Step 3: Extract name (empty messages array → uses transcript fallback path)
   const { name, source: nameSource } = extractName(emptyMessages, cleanedTranscript, address);
+  console.log(`[re-evaluate] Voice: name="${name}" source="${nameSource}"`);
 
-  // Step 4: Classify
+  // Step 4: Classify (uses raw transcript, same text as initial pipeline now uses)
+  const classificationText = input.rawTranscript;
+  console.log(`[re-evaluate] Voice: classification text preview: "${classificationText.substring(0, 300)}${classificationText.length > 300 ? '...' : ''}"`);
   const classification = await classifyIntake({
-    rawText: input.rawTranscript,
+    rawText: classificationText,
     channel: "Voice",
     clientId: input.clientId,
   });
+  console.log(`[re-evaluate] Voice: classified intent="${classification.intent}" dept="${classification.department}" method="${classification.method}"`);
 
   return {
     candidateName: name,
