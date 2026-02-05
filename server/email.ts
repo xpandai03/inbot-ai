@@ -38,6 +38,11 @@ export interface EmailSendResult {
 
 /**
  * Format interaction data into email content
+ *
+ * Phase 4 Hardening: Reordered layout for clarity and actionability.
+ * Layout order: Issue Summary → Caller details → Intent/Dept → Warning (if needed) → Recording → Transcript
+ * Warning logic expanded: triggers on missing data or abnormal call ending, not just analysisSuccess.
+ *
  * @param record - The intake record
  * @param callMetadata - Optional call metadata with recording URL and transcript (Voice only)
  */
@@ -60,7 +65,7 @@ function formatEmailContent(
   const recordingUrl = callMetadata?.recordingUrl || callMetadata?.stereoRecordingUrl;
   const recordingHtml = (record.channel === "Voice" && recordingUrl) ? `
       <div style="background: #f0fdf4; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #22c55e;">
-        <h3 style="margin: 0 0 10px 0; color: #1a1a1a;">📞 Call Recording</h3>
+        <h3 style="margin: 0 0 10px 0; color: #1a1a1a;">Call Recording</h3>
         <p style="margin: 0;">
           <a href="${recordingUrl}" style="color: #16a34a; text-decoration: underline; font-weight: 500;">
             Listen to Call Recording
@@ -78,7 +83,7 @@ function formatEmailContent(
   const transcriptPreview = transcript ? transcript.substring(0, 500) : null;
   const transcriptHtml = (record.channel === "Voice" && transcriptPreview) ? `
       <div style="background: #fef3c7; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #f59e0b;">
-        <h3 style="margin: 0 0 10px 0; color: #1a1a1a;">📝 Call Transcript</h3>
+        <h3 style="margin: 0 0 10px 0; color: #1a1a1a;">Call Transcript</h3>
         <pre style="margin: 0; white-space: pre-wrap; word-wrap: break-word; font-family: inherit; font-size: 14px; color: #374151; background: #fffbeb; padding: 10px; border-radius: 4px;">${transcriptPreview}${transcript && transcript.length > 500 ? "..." : ""}</pre>
       </div>
   ` : "";
@@ -87,24 +92,60 @@ function formatEmailContent(
     ? `\nCall Transcript (first 500 chars):\n${transcriptPreview}${transcript && transcript.length > 500 ? "..." : ""}\n`
     : "";
 
-  // Build review advisory (Voice only, if call flagged as incomplete)
-  const showReviewAdvisory = record.channel === "Voice" && callMetadata && !callMetadata.analysisSuccess;
+  // ============================================================
+  // Phase 4 Hardening: Expanded warning trigger conditions
+  // ============================================================
+  // Show warning ONLY when there is a genuine data quality issue.
+  // Collect specific reasons so the message is factual, not alarming.
+  // ============================================================
+  const addressMissing = !record.address || record.address === "Not provided" || record.address.trim() === "";
+  const nameMissing = !record.name || record.name === "Not provided" || record.name === "Unknown Caller" || record.name.trim() === "";
+
+  // Normal call endings that do NOT warrant a warning
+  const NORMAL_ENDINGS = new Set([
+    "customer-ended-call",
+    "assistant-ended-call",
+    "silence-timed-out",
+    "customer-did-not-give-microphone-permission",
+    "assistant-said-end-call-phrase",
+  ]);
+  const callEndedAbnormally = record.channel === "Voice" && callMetadata
+    && !NORMAL_ENDINGS.has(callMetadata.endedReason);
+  const analysisFailed = record.channel === "Voice" && callMetadata
+    && !callMetadata.analysisSuccess;
+
+  const reviewReasons: string[] = [];
+  if (addressMissing) reviewReasons.push("No address was captured.");
+  if (nameMissing) reviewReasons.push("Caller name was not identified.");
+  if (callEndedAbnormally) reviewReasons.push(`Call ended unexpectedly (${callMetadata?.endedReason || "unknown"}).`);
+  if (analysisFailed && !callEndedAbnormally) reviewReasons.push("Call analysis did not complete successfully.");
+
+  const showReviewAdvisory = reviewReasons.length > 0;
+
+  console.log(`[email] Review advisory: show=${showReviewAdvisory}, reasons=${JSON.stringify(reviewReasons)}`);
+
   const reviewAdvisoryHtml = showReviewAdvisory ? `
-      <div style="background: #fef2f2; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ef4444;">
-        <h3 style="margin: 0 0 10px 0; color: #1a1a1a;">⚠️ Please Review This Call</h3>
-        <p style="margin: 0; color: #374151;">
-          This call may have ended early or the intake data may be incomplete.
-          Please review the call recording and transcript above to verify the information.
-        </p>
-        <p style="margin: 10px 0 0 0; color: #6b7280; font-size: 13px;">
-          Call ended reason: ${callMetadata?.endedReason || "unknown"}
-        </p>
+      <div style="background: #fffbeb; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #f59e0b;">
+        <h3 style="margin: 0 0 10px 0; color: #1a1a1a;">Note: Some details may need verification</h3>
+        <ul style="margin: 0; padding-left: 20px; color: #374151;">
+          ${reviewReasons.map(r => `<li style="margin: 4px 0;">${r}</li>`).join("\n          ")}
+        </ul>
       </div>
   ` : "";
 
   const reviewAdvisoryText = showReviewAdvisory
-    ? `\n⚠️ PLEASE REVIEW THIS CALL\nThis call may have ended early or the intake data may be incomplete.\nCall ended reason: ${callMetadata?.endedReason || "unknown"}\n`
+    ? `\nNote: Some details may need verification\n${reviewReasons.map(r => `- ${r}`).join("\n")}\n`
     : "";
+
+  // ============================================================
+  // Phase 4 Hardening: Reordered email layout
+  // 1. Issue Summary (top — most actionable info)
+  // 2. Caller details table (with Intent + Department)
+  // 3. Review advisory (only if triggered)
+  // 4. Call recording
+  // 5. Call transcript
+  // 6. Footer
+  // ============================================================
 
   const html = `
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -112,14 +153,15 @@ function formatEmailContent(
         New Intake Report
       </h2>
 
+      <div style="background: #f0f9ff; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #3b82f6;">
+        <h3 style="margin: 0 0 10px 0; color: #1a1a1a;">Issue Summary</h3>
+        <p style="margin: 0; color: #374151; font-size: 15px;">${record.transcriptSummary || "No summary available"}</p>
+      </div>
+
       <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
         <tr>
-          <td style="padding: 8px 0; color: #666; width: 140px;">Department:</td>
-          <td style="padding: 8px 0; font-weight: bold;">${record.department}</td>
-        </tr>
-        <tr>
-          <td style="padding: 8px 0; color: #666;">Caller Name:</td>
-          <td style="padding: 8px 0;">${record.name}</td>
+          <td style="padding: 8px 0; color: #666; width: 140px;">Caller Name:</td>
+          <td style="padding: 8px 0; font-weight: 500;">${record.name}</td>
         </tr>
         <tr>
           <td style="padding: 8px 0; color: #666;">Phone:</td>
@@ -128,6 +170,14 @@ function formatEmailContent(
         <tr>
           <td style="padding: 8px 0; color: #666;">Address:</td>
           <td style="padding: 8px 0;">${record.address || "Not provided"}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px 0; color: #666;">Issue Type:</td>
+          <td style="padding: 8px 0;">${record.intent}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px 0; color: #666;">Department:</td>
+          <td style="padding: 8px 0; font-weight: bold;">${record.department}</td>
         </tr>
         <tr>
           <td style="padding: 8px 0; color: #666;">Timestamp:</td>
@@ -153,16 +203,6 @@ function formatEmailContent(
 
       ${transcriptHtml}
 
-      <div style="background: #f8fafc; padding: 15px; border-radius: 8px; margin: 20px 0;">
-        <h3 style="margin: 0 0 10px 0; color: #1a1a1a;">Issue Summary</h3>
-        <p style="margin: 0; color: #374151;">${record.transcriptSummary || "No summary available"}</p>
-      </div>
-
-      <div style="background: #fffbeb; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #f59e0b;">
-        <h3 style="margin: 0 0 10px 0; color: #1a1a1a;">Raw Issue Text</h3>
-        <p style="margin: 0; color: #374151; font-style: italic;">"${record.intent || "No issue text captured"}"</p>
-      </div>
-
       <p style="color: #9ca3af; font-size: 12px; margin-top: 30px; border-top: 1px solid #e5e7eb; padding-top: 15px;">
         This email was automatically generated by InBot AI. Record ID: ${record.id}
       </p>
@@ -173,21 +213,19 @@ function formatEmailContent(
 New Intake Report
 =================
 
-Department: ${record.department}
+Issue Summary:
+${record.transcriptSummary || "No summary available"}
+
 Caller Name: ${record.name}
 Phone: ${record.phone}
 Address: ${record.address || "Not provided"}
+Issue Type: ${record.intent}
+Department: ${record.department}
 Timestamp: ${timestamp}
 Channel: ${record.channel}
 Language: ${record.language}
 Duration: ${Math.round(record.durationSeconds / 60)} min ${record.durationSeconds % 60} sec
 ${reviewAdvisoryText}${recordingText}${transcriptText}
-Issue Summary:
-${record.transcriptSummary || "No summary available"}
-
-Raw Issue Text:
-"${record.intent || "No issue text captured"}"
-
 ---
 Record ID: ${record.id}
   `.trim();

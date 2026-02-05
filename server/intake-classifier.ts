@@ -622,7 +622,7 @@ const STRONG_INTENT_KEYWORDS: Array<{ keywords: RegExp[]; intent: string; depart
  */
 function detectStrongIntent(text: string): { intent: string; department: string } | null {
   const lowerText = text.toLowerCase();
-  
+
   for (const { keywords, intent, department } of STRONG_INTENT_KEYWORDS) {
     for (const keyword of keywords) {
       if (keyword.test(lowerText)) {
@@ -631,8 +631,30 @@ function detectStrongIntent(text: string): { intent: string; department: string 
       }
     }
   }
-  
+
   return null;
+}
+
+/**
+ * Detect ALL matching strong intent categories in text.
+ * Phase 4 Hardening: Used to resolve conflicts when the LLM returns one
+ * specific intent but strong keywords indicate a different one.
+ * Returns the set of intent names that have at least one keyword match.
+ */
+function detectAllStrongIntents(text: string): Set<string> {
+  const lowerText = text.toLowerCase();
+  const matched = new Set<string>();
+
+  for (const { keywords, intent } of STRONG_INTENT_KEYWORDS) {
+    for (const keyword of keywords) {
+      if (keyword.test(lowerText)) {
+        matched.add(intent);
+        break; // one match per category is enough
+      }
+    }
+  }
+
+  return matched;
 }
 
 /**
@@ -683,6 +705,29 @@ export async function classifyIntake(input: ClassificationInput): Promise<Classi
           method: "llm",
         };
       }
+
+      // Phase 4 Hardening: Override when LLM returns a DIFFERENT specific intent
+      // than what strong keywords indicate. This catches cases like hydrant calls
+      // being classified as "Safety Concern" instead of "Water / Utilities".
+      // Guard: only override if the LLM's returned intent does NOT also have
+      // matching strong keywords in the text (i.e., no competing signal).
+      if (strongIntent && llmResult.intent !== strongIntent.intent) {
+        const allMatched = detectAllStrongIntents(input.rawText);
+        const llmIntentAlsoMatched = allMatched.has(llmResult.intent);
+
+        if (!llmIntentAlsoMatched) {
+          console.log(`[classifier] OVERRIDE: LLM returned "${llmResult.intent}" but only "${strongIntent.intent}" keywords present (no competing "${llmResult.intent}" keywords) → ${strongIntent.intent}`);
+          return {
+            intent: strongIntent.intent,
+            department: strongIntent.department,
+            summary: llmResult.summary,
+            method: "llm",
+          };
+        } else {
+          console.log(`[classifier] NO OVERRIDE: Both "${strongIntent.intent}" and "${llmResult.intent}" keywords present — trusting LLM decision`);
+        }
+      }
+
       return llmResult;
     }
 
@@ -693,7 +738,7 @@ export async function classifyIntake(input: ClassificationInput): Promise<Classi
 
   // Fallback to regex
   const regexResult = classifyWithRegex(input.rawText);
-  
+
   // Phase 1 Final Hardening: Override regex "General Inquiry" if strong keywords present
   if (regexResult.intent === "General Inquiry" && strongIntent) {
     console.log(`[classifier] OVERRIDE: Regex returned "General Inquiry" but strong keyword found → ${strongIntent.intent}`);
@@ -704,6 +749,20 @@ export async function classifyIntake(input: ClassificationInput): Promise<Classi
       method: "regex",
     };
   }
-  
+
+  // Phase 4 Hardening: Same competing-intent override for regex path
+  if (strongIntent && regexResult.intent !== strongIntent.intent) {
+    const allMatched = detectAllStrongIntents(input.rawText);
+    if (!allMatched.has(regexResult.intent)) {
+      console.log(`[classifier] OVERRIDE: Regex returned "${regexResult.intent}" but only "${strongIntent.intent}" keywords present → ${strongIntent.intent}`);
+      return {
+        intent: strongIntent.intent,
+        department: strongIntent.department,
+        summary: regexResult.summary,
+        method: "regex",
+      };
+    }
+  }
+
   return regexResult;
 }
