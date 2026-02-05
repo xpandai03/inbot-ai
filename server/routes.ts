@@ -364,8 +364,14 @@ export async function registerRoutes(
       // Lazy import to avoid circular deps
       const { reEvaluate, computeDiff } = await import("./re-evaluate");
 
+      // Use extractionText from callMetadata if available (concatenated artifact.messages)
+      // Fall back to rawTranscript (msg.transcript or legacy buildRawIssueText)
+      const cmeta = record.callMetadata || {};
+      const extractionText = (cmeta['extractionText'] as string | undefined) || record.rawTranscript;
+      console.log(`[re-evaluate] Input source: ${cmeta['extractionText'] ? 'callMetadata.extractionText' : 'rawTranscript'}`);
+
       const result = await reEvaluate({
-        rawTranscript: record.rawTranscript,
+        rawTranscript: extractionText,
         channel: record.channel,
         clientId: record.clientId,
       });
@@ -671,14 +677,17 @@ export async function registerRoutes(
       }
 
       console.log("[VAPI] Inserting record into database...");
+      // Store msg.transcript as raw_transcript (for UI transcript viewer / audit)
+      // Store concatenated artifact.messages in callMetadata.extractionText (for re-eval parity)
       const newRecord = await storage.createRecord(validation.data, {
-        rawTranscript: rawText || undefined,
+        rawTranscript: callMetadata.transcript || rawText || undefined,
         recordingUrl: callMetadata.recordingUrl || undefined,
         stereoRecordingUrl: callMetadata.stereoRecordingUrl || undefined,
         callMetadata: {
           endedReason: callMetadata.endedReason,
           analysisSuccess: callMetadata.analysisSuccess,
           callId,
+          extractionText: rawText || undefined,
         },
       });
       console.log("[VAPI] === INSERT SUCCESS === ID:", newRecord.id);

@@ -2162,30 +2162,23 @@ export function transformVapiToIntakeRecord(payload: VapiWebhookPayload): Partia
   console.log("[vapi-transform] transcript length:", rawTranscript.length);
   console.log("[vapi-transform] transcript preview:", rawTranscript.substring(0, 200));
 
-  // Clean messages and transcript for better extraction (Fix 4)
+  // Clean messages for extraction (Fix 4)
   const messages = cleanMessagesForExtraction(rawMessages);
-  const transcript = cleanTranscriptForExtraction(rawTranscript);
 
-  // IMPORTANT: Extract address FIRST so we can use it for cross-validation
-  // This prevents address fragments from bleeding into the name field
-  const addressResult = extractAddress(messages, transcript);
-  console.log("[vapi-transform] ADDRESS extracted:", addressResult.address, "| source:", addressResult.source);
-
-  // Extract name with multi-candidate scoring (Phase 1 Hardening)
-  // Pass extracted address for cross-field validation
-  const nameResult = extractName(messages, transcript, addressResult.address);
-  console.log("[vapi-transform] NAME extracted:", nameResult.name, "| source:", nameResult.source);
-
-  // Detect language (uses RAW messages - LLM handles filler words fine)
-  const language = detectLanguage(rawMessages);
-
-  // Build raw text from multiple sources (uses RAW - for LLM classification)
-  // Phase 3 Hardening: Now includes bot messages for classification parity with re-eval
+  // ============================================================
+  // Option A Fix: Compute concatenated messages text BEFORE extraction
+  // This ensures Pass C uses the same text source as re-evaluation
+  // (clean artifact.messages with proper bot confirmations)
+  // ============================================================
   const userMsgCount = rawMessages.filter(m => m.role === "user").length;
   const botMsgCount = rawMessages.filter(m => m.role === "bot").length;
-  let rawIssueText = buildRawIssueText(rawMessages);
+  const concatenatedMessages = buildRawIssueText(rawMessages);
+  const hasArtifactMessages = concatenatedMessages && concatenatedMessages !== "No issue description provided";
+
+  // For classification: prefer concatenated messages, fall back to Vapi transcript
+  let rawIssueText = concatenatedMessages;
   let classificationSource = `messages(user=${userMsgCount},bot=${botMsgCount})`;
-  if (!rawIssueText || rawIssueText === "No issue description provided") {
+  if (!hasArtifactMessages) {
     rawIssueText = rawTranscript;
     classificationSource = "rawTranscript";
   }
@@ -2195,6 +2188,26 @@ export function transformVapiToIntakeRecord(payload: VapiWebhookPayload): Partia
   }
   console.log(`[vapi-transform] Classification input source: ${classificationSource}`);
   console.log(`[vapi-transform] Classification text preview: "${(rawIssueText || "").substring(0, 300)}${(rawIssueText || "").length > 300 ? '...' : ''}"`);
+
+  // Pass C transcript: use concatenated artifact.messages (matches re-eval input)
+  // Fall back to Vapi's msg.transcript only if artifact.messages is empty
+  const extractionTranscript = cleanTranscriptForExtraction(
+    hasArtifactMessages ? concatenatedMessages : rawTranscript
+  );
+  console.log(`[vapi-transform] Pass C source: ${hasArtifactMessages ? "artifact.messages(concatenated)" : "msg.transcript(fallback)"}`);
+
+  // IMPORTANT: Extract address FIRST so we can use it for cross-validation
+  // This prevents address fragments from bleeding into the name field
+  const addressResult = extractAddress(messages, extractionTranscript);
+  console.log("[vapi-transform] ADDRESS extracted:", addressResult.address, "| source:", addressResult.source);
+
+  // Extract name with multi-candidate scoring (Phase 1 Hardening)
+  // Pass extracted address for cross-field validation
+  const nameResult = extractName(messages, extractionTranscript, addressResult.address);
+  console.log("[vapi-transform] NAME extracted:", nameResult.name, "| source:", nameResult.source);
+
+  // Detect language (uses RAW messages - LLM handles filler words fine)
+  const language = detectLanguage(rawMessages);
 
   // Get phone number from FULL payload
   const phone = extractPhoneNumber(payload);
