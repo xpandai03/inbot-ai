@@ -1577,8 +1577,11 @@ function parseSpokenNumber(words: string[]): number | null {
   // Logic: "eleven" = group 1 (11), "twenty two" = group 2 (22) → concatenate "1122"
   if (!hasHundredOrThousand && words.length >= 2) {
     // Try to detect digit-group pattern: "eleven twenty two" = "11" + "22" = 1122
+    // Phase 4 Hardening: Use hasActiveGroup flag instead of checking groupCurrent > 0
+    // to correctly preserve zero digits ("twenty seven oh four" → 2704, not 274).
     const groups: number[] = [];
     let groupCurrent = 0;
+    let hasActiveGroup = false;
     let lastWasTens = false; // Track if last token was a tens word (20, 30, etc.)
 
     for (const word of words) {
@@ -1589,30 +1592,33 @@ function parseSpokenNumber(words: string[]): number | null {
 
         // If last was a tens word (20-90) and this is a ones digit (1-9), combine them
         // e.g., "twenty" (20) + "two" (2) = 22
+        // Note: zero does NOT combine with tens ("twenty oh" is not 20, it's a group break)
         if (lastWasTens && digitVal >= 1 && digitVal <= 9) {
           groupCurrent += digitVal;
           lastWasTens = false;
-        } else if (groupCurrent > 0) {
-          // Start a new group
+        } else if (hasActiveGroup) {
+          // Start a new group (push previous, even if it was zero)
           groups.push(groupCurrent);
           groupCurrent = digitVal;
           lastWasTens = false;
         } else {
           // First number in sequence
           groupCurrent = digitVal;
+          hasActiveGroup = true;
           lastWasTens = false;
         }
       } else if (TENS_WORDS[lower] !== undefined) {
-        if (groupCurrent > 0) {
+        if (hasActiveGroup) {
           // Push previous group, start new group with tens
           groups.push(groupCurrent);
         }
         groupCurrent = TENS_WORDS[lower];
+        hasActiveGroup = true;
         lastWasTens = true; // Mark that we just saw a tens word
       }
     }
 
-    if (groupCurrent > 0) {
+    if (hasActiveGroup) {
       groups.push(groupCurrent);
     }
 
@@ -2013,7 +2019,10 @@ export function extractAddress(messages: VapiMessage[], transcript?: string): { 
     return { address: validated, source: `${sourceLabel}/${result.pattern}` };
   };
 
-  // Pass A: Search USER messages for specific addresses
+  // Pass A: Search USER messages for specific addresses (last-confirmed-wins)
+  // Phase 4 Hardening: Scan ALL user messages, keep the LAST specific match.
+  // Callers may correct their address mid-call ("actually it's 2706, not 2704").
+  let lastUserAddress: { address: string; source: string } | null = null;
   for (let i = 0; i < userMessages.length; i++) {
     const msg = userMessages[i];
     const preview = msg.message.substring(0, 150);
@@ -2021,9 +2030,15 @@ export function extractAddress(messages: VapiMessage[], transcript?: string): { 
 
     const found = tryExtract(msg.message, "user-msg");
     if (found) {
-      console.log(`[extractAddress] ====== FOUND SPECIFIC ADDRESS: "${found.address}" (source: ${found.source}) ======`);
-      return found;
+      if (lastUserAddress) {
+        console.log(`[extractAddress] → Overriding previous "${lastUserAddress.address}" with "${found.address}" (last-confirmed-wins)`);
+      }
+      lastUserAddress = found;
     }
+  }
+  if (lastUserAddress) {
+    console.log(`[extractAddress] ====== FOUND SPECIFIC ADDRESS (last-confirmed-wins): "${lastUserAddress.address}" (source: ${lastUserAddress.source}) ======`);
+    return lastUserAddress;
   }
   console.log("[extractAddress] No specific address in user messages");
 
@@ -2033,6 +2048,7 @@ export function extractAddress(messages: VapiMessage[], transcript?: string): { 
   const botMessages = messages.filter(m => m.role === "bot");
   if (botMessages.length > 0) {
     console.log(`[extractAddress] Scanning ${botMessages.length} bot messages for address confirmations...`);
+    let lastBotAddress: { address: string; source: string } | null = null;
     for (let i = 0; i < botMessages.length; i++) {
       const msg = botMessages[i];
       const preview = msg.message.substring(0, 150);
@@ -2040,9 +2056,15 @@ export function extractAddress(messages: VapiMessage[], transcript?: string): { 
 
       const found = tryExtract(msg.message, "bot-msg");
       if (found) {
-        console.log(`[extractAddress] ====== FOUND SPECIFIC ADDRESS IN BOT CONFIRMATION: "${found.address}" (source: ${found.source}) ======`);
-        return found;
+        if (lastBotAddress) {
+          console.log(`[extractAddress] → Overriding previous bot "${lastBotAddress.address}" with "${found.address}" (last-confirmed-wins)`);
+        }
+        lastBotAddress = found;
       }
+    }
+    if (lastBotAddress) {
+      console.log(`[extractAddress] ====== FOUND SPECIFIC ADDRESS IN BOT CONFIRMATION (last-confirmed-wins): "${lastBotAddress.address}" (source: ${lastBotAddress.source}) ======`);
+      return lastBotAddress;
     }
     console.log("[extractAddress] No specific address in bot messages");
   }
