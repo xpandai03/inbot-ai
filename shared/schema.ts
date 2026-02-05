@@ -1,5 +1,15 @@
 import { z } from "zod";
 
+export const ADDRESS_QUALITY_VALUES = [
+  "complete",
+  "partial",
+  "intersection",
+  "approximate",
+  "missing",
+] as const;
+
+export type AddressQuality = (typeof ADDRESS_QUALITY_VALUES)[number];
+
 export const intakeRecordSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -14,9 +24,15 @@ export const intakeRecordSchema = z.object({
   timestamp: z.string(),
   transcriptSummary: z.string(),
   clientId: z.string(),
+  addressQuality: z.enum(ADDRESS_QUALITY_VALUES).default("missing"),
+  needsReview: z.boolean().default(false),
 });
 
-export const insertIntakeRecordSchema = intakeRecordSchema.omit({ id: true });
+export const insertIntakeRecordSchema = intakeRecordSchema.omit({
+  id: true,
+  addressQuality: true,
+  needsReview: true,
+});
 
 export type IntakeRecord = z.infer<typeof intakeRecordSchema>;
 export type InsertIntakeRecord = z.infer<typeof insertIntakeRecordSchema>;

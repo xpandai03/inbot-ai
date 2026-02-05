@@ -15,7 +15,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { ArrowLeft, ChevronDown, RefreshCw, Phone, MessageSquare } from "lucide-react";
+import { ArrowLeft, ChevronDown, RefreshCw, Phone, MessageSquare, AlertTriangle } from "lucide-react";
 import { TranscriptViewer } from "@/components/transcript-viewer";
 import { EvaluationDiff } from "@/components/evaluation-diff";
 import { EvaluationHistory } from "@/components/evaluation-history";
@@ -155,6 +155,12 @@ export default function RecordDetail() {
           <Badge variant="outline" className="text-[10px] px-1.5 py-0">
             {record.id.substring(0, 8)}
           </Badge>
+          {record.needsReview && (
+            <Badge variant="outline" className="text-[10px] px-1.5 py-0 border-amber-400/50 text-amber-500 flex items-center gap-0.5">
+              <AlertTriangle className="w-2.5 h-2.5" />
+              Needs Review
+            </Badge>
+          )}
         </div>
 
         {/* Record Summary */}
@@ -174,7 +180,23 @@ export default function RecordDetail() {
               </div>
               <div>
                 <span className="text-muted-foreground">Address</span>
-                <p className="text-foreground">{record.address || "-"}</p>
+                <div className="flex items-center gap-1.5">
+                  <p className="text-foreground">{record.address || "-"}</p>
+                  {record.addressQuality && record.addressQuality !== "complete" && (
+                    <Badge
+                      variant="outline"
+                      className={`text-[9px] px-1 py-0 font-normal ${
+                        record.addressQuality === "missing"
+                          ? "border-red-400/50 text-red-500"
+                          : record.addressQuality === "approximate"
+                          ? "border-amber-400/50 text-amber-500"
+                          : "border-slate-400/50 text-slate-500"
+                      }`}
+                    >
+                      {record.addressQuality}
+                    </Badge>
+                  )}
+                </div>
               </div>
               <div>
                 <span className="text-muted-foreground">Channel</span>

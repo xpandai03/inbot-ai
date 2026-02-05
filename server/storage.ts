@@ -18,6 +18,7 @@ import {
   type DBInteraction,
   type DBEvaluationHistory,
 } from "./supabase";
+import { deriveAddressQuality, deriveNeedsReview } from "./address-quality";
 
 export interface DepartmentEmailConfig {
   email: string;
@@ -83,6 +84,8 @@ const seedRecords: IntakeRecord[] = [
     timestamp: "2026-01-08T09:23:00Z",
     transcriptSummary: "Caller reported a large pothole on Oak Street near the intersection with Main. Requested repair within the week.",
     clientId: "city-springfield",
+    addressQuality: "complete",
+    needsReview: false,
   },
   {
     id: randomUUID(),
@@ -98,6 +101,8 @@ const seedRecords: IntakeRecord[] = [
     timestamp: "2026-01-08T10:15:00Z",
     transcriptSummary: "Resident inquired about missed trash collection on Monday. Scheduled for next-day pickup.",
     clientId: "city-springfield",
+    addressQuality: "complete",
+    needsReview: false,
   },
   {
     id: randomUUID(),
@@ -113,6 +118,8 @@ const seedRecords: IntakeRecord[] = [
     timestamp: "2026-01-08T11:42:00Z",
     transcriptSummary: "Caller had questions about recent water bill increase. Explained seasonal rate adjustment and payment options.",
     clientId: "city-springfield",
+    addressQuality: "complete",
+    needsReview: false,
   },
   {
     id: randomUUID(),
@@ -128,6 +135,8 @@ const seedRecords: IntakeRecord[] = [
     timestamp: "2026-01-08T13:08:00Z",
     transcriptSummary: "Reported non-functioning street light at corner of Birch Lane and 5th Street. Work order created.",
     clientId: "city-springfield",
+    addressQuality: "complete",
+    needsReview: false,
   },
   {
     id: randomUUID(),
@@ -143,6 +152,8 @@ const seedRecords: IntakeRecord[] = [
     timestamp: "2026-01-08T14:30:00Z",
     transcriptSummary: "Patient requested appointment for annual check-up. Scheduled for next Tuesday.",
     clientId: "county-health",
+    addressQuality: "complete",
+    needsReview: false,
   },
   {
     id: randomUUID(),
@@ -158,6 +169,8 @@ const seedRecords: IntakeRecord[] = [
     timestamp: "2026-01-08T15:55:00Z",
     transcriptSummary: "Caller inquired about flu shot availability. Scheduled for walk-in clinic tomorrow.",
     clientId: "county-health",
+    addressQuality: "complete",
+    needsReview: false,
   },
   {
     id: randomUUID(),
@@ -173,6 +186,8 @@ const seedRecords: IntakeRecord[] = [
     timestamp: "2026-01-07T16:20:00Z",
     transcriptSummary: "Requested information about bus route 42 schedule changes. Sent updated schedule link.",
     clientId: "metro-transit",
+    addressQuality: "complete",
+    needsReview: false,
   },
   {
     id: randomUUID(),
@@ -188,6 +203,8 @@ const seedRecords: IntakeRecord[] = [
     timestamp: "2026-01-07T08:45:00Z",
     transcriptSummary: "Caller reported lost backpack on evening train. Created case and provided tracking number.",
     clientId: "metro-transit",
+    addressQuality: "complete",
+    needsReview: false,
   },
 ];
 
@@ -219,7 +236,13 @@ export class MemStorage implements IStorage {
 
   async createRecord(insertRecord: InsertIntakeRecord): Promise<IntakeRecord> {
     const id = randomUUID();
-    const record: IntakeRecord = { ...insertRecord, id };
+    const addressQuality = deriveAddressQuality(insertRecord.address);
+    const needsReview = deriveNeedsReview({
+      addressQuality,
+      name: insertRecord.name,
+      channel: insertRecord.channel,
+    });
+    const record: IntakeRecord = { ...insertRecord, id, addressQuality, needsReview };
     this.records.set(id, record);
     return record;
   }
@@ -380,10 +403,20 @@ export class SupabaseStorage implements IStorage {
 
   async createRecord(insertRecord: InsertIntakeRecord, meta?: TranscriptMeta): Promise<IntakeRecord> {
     console.log("[SupabaseStorage.createRecord] === INSERTING RECORD ===");
-    console.log("[SupabaseStorage.createRecord] Input:", JSON.stringify(insertRecord, null, 2));
 
-    const dbRecord = intakeRecordToDB(insertRecord, meta);
-    console.log("[SupabaseStorage.createRecord] DB record:", JSON.stringify(dbRecord, null, 2));
+    // Derive address quality + needs_review before insert
+    const addressQuality = deriveAddressQuality(insertRecord.address);
+    const needsReview = deriveNeedsReview({
+      addressQuality,
+      name: insertRecord.name,
+      channel: insertRecord.channel,
+      callMetadata: meta?.callMetadata ?? null,
+    });
+
+    console.log(`[SupabaseStorage.createRecord] addressQuality=${addressQuality}, needsReview=${needsReview}`);
+
+    const enrichedRecord = { ...insertRecord, addressQuality, needsReview };
+    const dbRecord = intakeRecordToDB(enrichedRecord, meta);
 
     const { data, error } = await this.supabase
       .from("interactions")

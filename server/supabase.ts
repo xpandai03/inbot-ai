@@ -1,5 +1,5 @@
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
-import type { IntakeRecord, InsertIntakeRecord, IntakeRecordDetail, EvaluationEntry } from "@shared/schema";
+import type { IntakeRecord, InsertIntakeRecord, IntakeRecordDetail, EvaluationEntry, AddressQuality } from "@shared/schema";
 
 // Database row type (matches Supabase interactions table schema)
 export interface DBInteraction {
@@ -22,6 +22,9 @@ export interface DBInteraction {
   stereo_recording_url: string | null;
   call_metadata: Record<string, unknown> | null;
   updated_at: string | null;
+  // Address quality flags (added 2026-02-05)
+  address_quality: AddressQuality;
+  needs_review: boolean;
 }
 
 // Database row type for evaluation_history table
@@ -57,6 +60,8 @@ export function dbToIntakeRecord(row: DBInteraction): IntakeRecord {
     timestamp: row.created_at,
     transcriptSummary: row.issue_summary ?? "",
     clientId: row.client_id,
+    addressQuality: row.address_quality ?? "missing",
+    needsReview: row.needs_review ?? false,
   };
 }
 
@@ -93,7 +98,7 @@ export function dbToEvaluationEntry(row: DBEvaluationHistory): EvaluationEntry {
 
 // Transform App type -> DB insert
 export function intakeRecordToDB(
-  record: InsertIntakeRecord,
+  record: InsertIntakeRecord & { addressQuality?: AddressQuality; needsReview?: boolean },
   meta?: {
     rawTranscript?: string;
     recordingUrl?: string;
@@ -119,6 +124,8 @@ export function intakeRecordToDB(
     stereo_recording_url: meta?.stereoRecordingUrl ?? null,
     call_metadata: meta?.callMetadata ?? null,
     updated_at: null,
+    address_quality: record.addressQuality ?? "missing",
+    needs_review: record.needsReview ?? false,
   };
 }
 

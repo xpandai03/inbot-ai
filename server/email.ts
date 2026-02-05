@@ -93,34 +93,30 @@ function formatEmailContent(
     : "";
 
   // ============================================================
-  // Phase 4 Hardening: Expanded warning trigger conditions
+  // Review advisory: gated by the persisted needsReview flag
+  // (computed at insert time by deriveNeedsReview with full context).
+  // Reasons are still enumerated for descriptive bullet points.
   // ============================================================
-  // Show warning ONLY when there is a genuine data quality issue.
-  // Collect specific reasons so the message is factual, not alarming.
-  // ============================================================
-  const addressMissing = !record.address || record.address === "Not provided" || record.address.trim() === "";
-  const nameMissing = !record.name || record.name === "Not provided" || record.name === "Unknown Caller" || record.name.trim() === "";
-
-  // Normal call endings that do NOT warrant a warning
-  const NORMAL_ENDINGS = new Set([
-    "customer-ended-call",
-    "assistant-ended-call",
-    "silence-timed-out",
-    "customer-did-not-give-microphone-permission",
-    "assistant-said-end-call-phrase",
-  ]);
-  const callEndedAbnormally = record.channel === "Voice" && callMetadata
-    && !NORMAL_ENDINGS.has(callMetadata.endedReason);
-  const analysisFailed = record.channel === "Voice" && callMetadata
-    && !callMetadata.analysisSuccess;
+  const showReviewAdvisory = record.needsReview;
 
   const reviewReasons: string[] = [];
-  if (addressMissing) reviewReasons.push("No address was captured.");
-  if (nameMissing) reviewReasons.push("Caller name was not identified.");
-  if (callEndedAbnormally) reviewReasons.push(`Call ended unexpectedly (${callMetadata?.endedReason || "unknown"}).`);
-  if (analysisFailed && !callEndedAbnormally) reviewReasons.push("Call analysis did not complete successfully.");
+  if (showReviewAdvisory) {
+    const addressMissing = !record.address || record.address === "Not provided" || record.address.trim() === "";
+    const nameMissing = !record.name || record.name === "Not provided" || record.name === "Unknown Caller" || record.name.trim() === "";
+    const callEndedAbnormally = record.channel === "Voice" && callMetadata
+      && !["customer-ended-call", "assistant-ended-call", "silence-timed-out",
+           "customer-did-not-give-microphone-permission", "assistant-said-end-call-phrase"]
+        .includes(callMetadata.endedReason);
+    const analysisFailed = record.channel === "Voice" && callMetadata
+      && !callMetadata.analysisSuccess;
 
-  const showReviewAdvisory = reviewReasons.length > 0;
+    if (addressMissing) reviewReasons.push("No address was captured.");
+    if (nameMissing) reviewReasons.push("Caller name was not identified.");
+    if (callEndedAbnormally) reviewReasons.push(`Call ended unexpectedly (${callMetadata?.endedReason || "unknown"}).`);
+    if (analysisFailed && !callEndedAbnormally) reviewReasons.push("Call analysis did not complete successfully.");
+    // Fallback if flag was set by a condition we don't enumerate here
+    if (reviewReasons.length === 0) reviewReasons.push("This record was flagged for review.");
+  }
 
   console.log(`[email] Review advisory: show=${showReviewAdvisory}, reasons=${JSON.stringify(reviewReasons)}`);
 

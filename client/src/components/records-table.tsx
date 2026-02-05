@@ -20,7 +20,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Phone, MessageSquare, Trash2 } from "lucide-react";
+import { Phone, MessageSquare, Trash2, AlertTriangle } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Link } from "wouter";
 import type { IntakeRecord } from "@shared/schema";
@@ -159,23 +159,48 @@ export function RecordsTable({ records, showCost = false, isLoading = false, isS
               className="border-b border-card-border/50 last:border-0 hover:bg-muted/30"
               data-testid={`row-record-${record.id}`}
             >
-              <TableCell className={`${cellClass} font-medium text-foreground truncate`} title={record.name}>
-                {isSuperAdmin ? (
-                  <Link
-                    href={`/records/${record.id}`}
-                    className="hover:underline hover:text-primary cursor-pointer"
-                  >
-                    {record.name}
-                  </Link>
-                ) : (
-                  record.name
-                )}
+              <TableCell className={`${cellClass} font-medium text-foreground`}>
+                <div className="flex items-center gap-1 min-w-0">
+                  <span className="truncate">
+                    {isSuperAdmin ? (
+                      <Link
+                        href={`/records/${record.id}`}
+                        className="hover:underline hover:text-primary cursor-pointer"
+                      >
+                        {record.name}
+                      </Link>
+                    ) : (
+                      record.name
+                    )}
+                  </span>
+                  {record.needsReview && (
+                    <span title="Needs review">
+                      <AlertTriangle className="w-3 h-3 text-amber-500 shrink-0" />
+                    </span>
+                  )}
+                </div>
               </TableCell>
               <TableCell className={`${cellClass} text-xs text-muted-foreground tabular-nums truncate`}>
                 {record.phone || (record.channel === "Voice" ? "(Web)" : "-")}
               </TableCell>
-              <TableCell className={`${cellClass} text-xs text-muted-foreground truncate`} title={record.address}>
-                {record.address}
+              <TableCell className={`${cellClass} text-xs text-muted-foreground`} title={record.address}>
+                <div className="flex items-center gap-1 min-w-0">
+                  <span className="truncate">{record.address || "-"}</span>
+                  {record.addressQuality && record.addressQuality !== "complete" && (
+                    <Badge
+                      variant="outline"
+                      className={`text-[9px] px-1 py-0 shrink-0 font-normal ${
+                        record.addressQuality === "missing"
+                          ? "border-red-400/50 text-red-500"
+                          : record.addressQuality === "approximate"
+                          ? "border-amber-400/50 text-amber-500"
+                          : "border-slate-400/50 text-slate-500"
+                      }`}
+                    >
+                      {record.addressQuality}
+                    </Badge>
+                  )}
+                </div>
               </TableCell>
               <TableCell className={`${cellClass} truncate`}>
                 {record.intent === "Pending" ? (
