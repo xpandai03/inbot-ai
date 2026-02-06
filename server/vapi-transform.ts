@@ -156,9 +156,9 @@ export function cleanTranscriptForExtraction(text: string): string {
 
   // Remove Spanish filler words (Phase 1 Spanish Hardening)
   // Common Spanish hesitation markers and discourse fillers
-  // Note: "bueno" at sentence start is a filler, but can be meaningful mid-sentence
-  // Using word boundary to preserve when it's part of a phrase
-  cleaned = cleaned.replace(/\b(este|pues|bueno|entonces|o sea|a ver|mira|oye|verdad|sabes)\b/gi, " ");
+  // Note: "bueno" is intentionally EXCLUDED — it is used as a casual intro trigger
+  //   for name extraction ("Bueno, José Martínez llamando") and removing it blocks that pattern.
+  cleaned = cleaned.replace(/\b(este|pues|entonces|o sea|a ver|mira|oye|verdad|sabes)\b/gi, " ");
 
   // Remove ellipses (multiple dots) → single space
   cleaned = cleaned.replace(/\.{2,}/g, " ");
@@ -218,6 +218,13 @@ const IGNORE_WORDS = new Set([
   "street", "road", "pothole", "light", "tree", "sign", "garbage", "trash",
   "car", "house", "home", "work", "today", "tomorrow", "yesterday",
   "morning", "afternoon", "evening", "night", "week", "month", "year",
+]);
+
+// Module-level Spanish name allowlist (used by scoring + validation to exempt real names)
+const SPANISH_NAME_ALLOWLIST = new Set([
+  "luz", "rosa", "cruz", "mar", "sol", "cielo", "paz", "angel", "jesus",
+  "dolores", "pilar", "rocio", "mercedes", "consuelo", "esperanza",
+  "guadalupe", "trinidad", "santos", "reyes", "flores",
 ]);
 
 /**
@@ -573,8 +580,8 @@ export function validateExtractedName(name: string): string | null {
   // Calculate human-name criteria score
   let humanNameScore = 0;
   
-  // Criterion 1: Has 2-3 tokens (typical human name pattern)
-  if (words.length >= 2 && words.length <= 3) {
+  // Criterion 1: Has 2-5 tokens (typical human name pattern, up to 5 for Spanish compound names)
+  if (words.length >= 2 && words.length <= 5) {
     humanNameScore++;
   }
   
@@ -607,7 +614,7 @@ export function validateExtractedName(name: string): string | null {
     "bache", "calle", "luz", "agua", "basura", "factura",
   ]);
   
-  const hasIntentFillerWord = words.some(w => INTENT_FILLER_WORDS.has(w));
+  const hasIntentFillerWord = words.some(w => INTENT_FILLER_WORDS.has(w) && !SPANISH_NAME_ALLOWLIST.has(w));
   if (!hasIntentFillerWord) {
     humanNameScore++;
   }
@@ -937,8 +944,9 @@ function extractAllNameCandidates(text: string, messageIndex: number): NameCandi
     { regex: new RegExp(`(?:speaking|yes|yeah),?\\s+(?:this is|it's)\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "gi"), pattern: "speaking intro" },
     
     // Spanish casual: "Hola, [Name] llamando" / "Sí, [Name] aquí"
-    { regex: new RegExp(`(?:hola|bueno),?\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){1,2})\\s+(?:llamando|aqu[ií])`, "gi"), pattern: "casual intro" },
-    { regex: new RegExp(`(?:s[ií]),?\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){1,2})\\s+(?:aqu[ií]|llamando|hablando)`, "gi"), pattern: "yes intro" },
+    // Allow up to 5 name words to support compound names like "María de la Luz"
+    { regex: new RegExp(`(?:hola|bueno),?\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){1,4})\\s+(?:llamando|aqu[ií])`, "gi"), pattern: "casual intro" },
+    { regex: new RegExp(`(?:s[ií]),?\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){1,4})\\s+(?:aqu[ií]|llamando|hablando)`, "gi"), pattern: "yes intro" },
     
     // ============================================================
     // Phase 2 Hardening: RESPONSE TO NAME QUESTION
@@ -975,10 +983,10 @@ function extractAllNameCandidates(text: string, messageIndex: number): NameCandi
         const cleaned = rawMatch.replace(/[.,!?]$/, "").trim();
         const words = cleaned.split(/\s+/).filter(isValidNameWord);
         
-        if (words.length >= 1 && words.length <= 3) {
+        if (words.length >= 1 && words.length <= 5) {
           const value = words.join(" ");
           let score = PATTERN_BASE_SCORES[pattern] || 50;
-          
+
           // Score adjustments based on quality signals
           score += calculateNameScoreAdjustments(value, cleaned, text, match.index || 0);
           
@@ -1105,7 +1113,8 @@ function calculateNameScoreAdjustments(value: string, rawMatch: string, fullText
   ]);
 
   // -300: Contains intent/filler words (very likely not a name)
-  const intentFillerCount = lowerWords.filter(w => INTENT_FILLER_WORDS.has(w)).length;
+  // Exclude words that are also valid Spanish names (luz, rosa, cruz, etc.)
+  const intentFillerCount = lowerWords.filter(w => INTENT_FILLER_WORDS.has(w) && !SPANISH_NAME_ALLOWLIST.has(w)).length;
   if (intentFillerCount > 0) {
     adjustment -= 300 * intentFillerCount;
     console.log(`[score] -${300 * intentFillerCount} for intent/filler words in "${value}"`);
@@ -1118,12 +1127,15 @@ function calculateNameScoreAdjustments(value: string, rawMatch: string, fullText
   }
   
   // -150: Contains address-like words
+  // Skip Spanish articles (la, el, los, las, de) when the name contains a known Spanish name
   const addressWords = new Set([
-    "la", "el", "los", "las", "calle", "avenida", "street", "avenue", "road", 
+    "la", "el", "los", "las", "calle", "avenida", "street", "avenue", "road",
     "drive", "boulevard", "lane", "way", "court", "place", "north", "south",
     "east", "west", "main", "first", "second", "third",
   ]);
-  const addressWordCount = lowerWords.filter(w => addressWords.has(w)).length;
+  const SPANISH_ARTICLES = new Set(["la", "el", "los", "las", "de", "del"]);
+  const hasSpanishNameWord = lowerWords.some(w => SPANISH_NAME_ALLOWLIST.has(w));
+  const addressWordCount = lowerWords.filter(w => addressWords.has(w) && !(hasSpanishNameWord && SPANISH_ARTICLES.has(w))).length;
   if (addressWordCount > 0) {
     adjustment -= 150 * addressWordCount;
     console.log(`[score] -${150 * addressWordCount} for address words in "${value}"`);
@@ -1740,6 +1752,31 @@ function getOrdinalSuffix(n: number): string {
 }
 
 /**
+ * Trim trailing Spanish stop words from a captured address string.
+ * Prevents greedy regex over-capture (e.g., "2706 Calle Principal hay una" → "2706 Calle Principal").
+ * Keeps at least 3 words (number + type + 1 name word minimum).
+ * Safe for English addresses — stop list is Spanish-only.
+ */
+function trimSpanishAddressOverCapture(captured: string): string {
+  const STOP_WORDS = new Set([
+    // Spanish verbs / sentence starters (never part of a street name)
+    "hay", "es", "está", "esta", "tiene", "tienen", "tengo",
+    "necesito", "quiero", "reportar", "porque", "pero",
+    // Spanish articles / pronouns / prepositions (signal new clause when trailing)
+    "y", "el", "la", "los", "las", "un", "una", "unos", "unas",
+    "mi", "su", "se", "me", "nos", "le", "les",
+    "que", "donde", "como", "cuando", "con", "sin", "por", "para",
+  ]);
+
+  const words = captured.split(/\s+/);
+  // Iteratively strip trailing stop words, keeping at least 3 words
+  while (words.length > 3 && STOP_WORDS.has(words[words.length - 1].toLowerCase())) {
+    words.pop();
+  }
+  return words.join(" ");
+}
+
+/**
  * Extract address from text using multiple patterns
  * Returns { address, source } for logging
  */
@@ -1764,6 +1801,35 @@ function extractAddressFromText(text: string): { address: string | null; pattern
     if (match && match[1]) {
       console.log(`[extractAddressFromText] Pattern 1 (numeric) MATCHED: "${match[1]}"`);
       return { address: match[1].replace(/[.,!?]$/, "").trim(), pattern: "numeric" };
+    }
+  }
+
+  // ============================================================
+  // Pattern 1b: SPANISH WORD-ORDER ADDRESSES (Spanish Voice Hardening)
+  // ============================================================
+  // Spanish addresses place street type BEFORE name (opposite of English):
+  //   "2706 Calle Principal" = Number + Type + Name
+  //   "Calle Principal 2706" = Type + Name + Number
+  //   "Calle Principal número 2706" = Type + Name + número + Number
+  // Uses STREET_TYPES_SPANISH only — will NOT match English addresses.
+  // ============================================================
+  const ADDR_WORD_ES = "[A-Za-z\\u00C0-\\u00FF][A-Za-z\\u00C0-\\u00FF'-]*";
+  const spanishWordOrderPatterns = [
+    // Number + Type + Name(s): "2706 Calle Principal", "123 Avenida Central"
+    new RegExp(`(\\d{1,6}\\s+(?:${STREET_TYPES_SPANISH})\\s+${ADDR_WORD_ES}(?:\\s+${ADDR_WORD_ES}){0,2})`, "i"),
+    // Type + Name(s) + Number: "Calle Principal 2706", "Avenida Central 123"
+    new RegExp(`((?:${STREET_TYPES_SPANISH})\\s+${ADDR_WORD_ES}(?:\\s+${ADDR_WORD_ES}){0,2}\\s+\\d{1,6})`, "i"),
+    // Type + Name(s) + "número/#" + Number: "Calle Principal número 2706"
+    new RegExp(`((?:${STREET_TYPES_SPANISH})\\s+${ADDR_WORD_ES}(?:\\s+${ADDR_WORD_ES}){0,2}\\s+(?:n[uú]mero|#)\\s*\\d{1,6})`, "i"),
+  ];
+
+  for (const pattern of spanishWordOrderPatterns) {
+    const match = text.match(pattern);
+    if (match && match[1]) {
+      let captured = match[1].replace(/[.,!?]$/, "").trim();
+      captured = trimSpanishAddressOverCapture(captured);
+      console.log(`[extractAddressFromText] Pattern 1b (spanish-word-order) MATCHED: "${captured}"`);
+      return { address: captured, pattern: "spanish-word-order" };
     }
   }
 
@@ -1798,23 +1864,28 @@ function extractAddressFromText(text: string): { address: string | null; pattern
     /(?:en\s+la|en\s+el)\s+((?:Calle|Avenida|Av|Pasaje|Camino)\s+[\w\s]+)/i,
     
     // ============================================================
-    // PHASE 2 SPANISH HARDENING: Additional Spanish address patterns
+    // PHASE 3 SPANISH VOICE HARDENING: Bounded Spanish address patterns
     // ============================================================
-    // "es en la calle X" / "está en la calle X" - common response to "what's the address?"
-    /(?:es\s+en|est[aá]\s+en|queda\s+en)\s+(?:la\s+|el\s+)?((?:Calle|Avenida|Av|Pasaje|Camino|Carretera|Plaza|Bulevar)\s+[\w\s]+)/i,
+    // Fixed: replaced greedy [\w\s]+ with bounded word captures to prevent over-capture.
+    // Added: "el problema está en" trigger phrase.
+
+    // "es en la calle X" / "está en la calle X" / "el problema está en Calle X"
+    /(?:(?:el\s+)?problema\s+)?(?:es\s+en|est[aá]\s+en|queda\s+en)\s+(?:la\s+|el\s+)?((?:Calle|Avenida|Av|Pasaje|Camino|Carretera|Plaza|Bulevar)\s+[A-Za-z\u00C0-\u00FF][A-Za-z\u00C0-\u00FF'-]*(?:\s+[A-Za-z\u00C0-\u00FF][A-Za-z\u00C0-\u00FF'-]*){0,3})/i,
     // "la dirección es [address]"
-    /la\s+direcci[oó]n\s+es\s+((?:Calle|Avenida|Av)?\s*[\w\s]+\s*\d{1,6})/i,
-    // "en [Street Name]" without explicit Calle/Avenida - common in casual speech
-    /(?:est[aá]|queda|es)\s+en\s+(\d{1,6}\s+[\w\s]+)/i,
-    // Spanish street with "número" - "Calle Oak número 123" / "Avenida Central número 456"
-    /((?:Calle|Avenida|Av|Pasaje|Camino|Plaza)\s+[\w\s]+)\s+n[uú]mero\s+(\d{1,6})/i,
+    /la\s+direcci[oó]n\s+es\s+((?:Calle|Avenida|Av)?\s*[A-Za-z\u00C0-\u00FF][A-Za-z\u00C0-\u00FF'-]*(?:\s+[A-Za-z\u00C0-\u00FF][A-Za-z\u00C0-\u00FF'-]*){0,3}\s*\d{1,6})/i,
+    // "está en / el problema está en" + numeric address (bounded to 4 words after number)
+    /(?:(?:el\s+)?problema\s+)?(?:est[aá]|queda|es)\s+en\s+(\d{1,6}\s+[A-Za-z\u00C0-\u00FF][A-Za-z\u00C0-\u00FF'-]*(?:\s+[A-Za-z\u00C0-\u00FF][A-Za-z\u00C0-\u00FF'-]*){0,3})/i,
+    // Spanish street with "número" - "Calle Oak número 123" (single capture group)
+    /((?:Calle|Avenida|Av|Pasaje|Camino|Plaza)\s+[A-Za-z\u00C0-\u00FF][A-Za-z\u00C0-\u00FF'-]*(?:\s+[A-Za-z\u00C0-\u00FF][A-Za-z\u00C0-\u00FF'-]*){0,2}\s+n[uú]mero\s+\d{1,6})/i,
   ];
 
   for (const pattern of prefixPatterns) {
     const match = text.match(pattern);
     if (match && match[1]) {
-      console.log(`[extractAddressFromText] Pattern 3 (prefix) MATCHED: "${match[1]}"`);
-      return { address: match[1].replace(/[.,!?]$/, "").trim(), pattern: "prefix" };
+      let captured = match[1].replace(/[.,!?]$/, "").trim();
+      captured = trimSpanishAddressOverCapture(captured);
+      console.log(`[extractAddressFromText] Pattern 3 (prefix) MATCHED: "${captured}"`);
+      return { address: captured, pattern: "prefix" };
     }
   }
 
