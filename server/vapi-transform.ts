@@ -1797,7 +1797,22 @@ export function normalizeSpokenAddress(input: string): string {
   if (ordinalResult) parts.push(ordinalResult);
   parts.push(...restWords);
 
-  const normalizedAddress = parts.join(" ");
+  let normalizedAddress = parts.join(" ");
+
+  // CLEAR: Post-pass — normalize spoken ordinals anywhere in the string (e.g. "eightieth" → "80th").
+  // When address is "21st Street and eightieth Avenue", "eightieth" was in restWords and never converted.
+  const TENS_ORDINALS: Record<string, string> = {
+    twentieth: "20th", thirtieth: "30th", fortieth: "40th", fiftieth: "50th",
+    sixtieth: "60th", seventieth: "70th", eightieth: "80th", ninetieth: "90th", hundredth: "100th",
+  };
+  for (const [word, num] of Object.entries(TENS_ORDINALS)) {
+    const re = new RegExp(`\\b${word}\\b`, "gi");
+    const next = normalizedAddress.replace(re, num);
+    if (next !== normalizedAddress) {
+      normalizedAddress = next;
+      console.log(`[normalize] Post-pass: "${word}" → "${num}"`);
+    }
+  }
 
   console.log(`[normalize] "${input}" → "${normalizedAddress}"`);
 
@@ -1985,6 +2000,26 @@ function extractAddressFromText(text: string): { address: string | null; pattern
     }
   }
 
+  // Pattern 3c: Intersection of numbered/ordinal streets (BEFORE any-street so we split and normalize both parts)
+  // e.g. "at the intersection of 20 first Street and eightieth Avenue" → "21st Street & 80th Avenue (Approximate)"
+  const intersectionNumberedRe = new RegExp(
+    `(?:at\\s+the\\s+)?(?:intersection|corner)\\s+of\\s+(.+?)\\s+(?:and|&)\\s+(.+?)(?=[.,]|$)`,
+    "is"
+  );
+  const intersectionNumberedMatch = text.match(intersectionNumberedRe);
+  if (intersectionNumberedMatch && intersectionNumberedMatch[1] && intersectionNumberedMatch[2]) {
+    const part1 = intersectionNumberedMatch[1].trim();
+    const part2 = intersectionNumberedMatch[2].trim();
+    const streetTypeRe = new RegExp(`\\s+(?:${STREET_TYPES})$`, "i");
+    if (streetTypeRe.test(part1) && streetTypeRe.test(part2)) {
+      const norm1 = normalizeSpokenAddress(part1);
+      const norm2 = normalizeSpokenAddress(part2);
+      const location = `${norm1} & ${norm2} (Approximate)`;
+      console.log(`[extractAddressFromText] Pattern 3c (intersection-numbered) MATCHED: "${location}"`);
+      return { address: location, pattern: "cross-street" };
+    }
+  }
+
   // Pattern 4: Any text ending in a street type (less confident)
   // Supports accented characters for Spanish street names
   // Phase 2 Hardening: Added question phrase rejection
@@ -2101,28 +2136,9 @@ function extractAddressFromText(text: string): { address: string | null; pattern
   // These capture approximate/contextual locations when no specific address is given.
   // Examples: "on my block", "in the parking lot", "corner of Oak and Main"
   // Returns with "(Approximate)" suffix to indicate lower confidence.
+  // (Intersection of numbered streets is Pattern 3c, before Pattern 4.)
   // ============================================================
   
-  // 6a. Intersection of numbered/ordinal streets (e.g. "21st Street and 80th Avenue", "20 first Street and eightieth Avenue")
-  // Must run before letter-only cross-street pattern so "intersection of 20 first Street and eightieth Avenue" matches.
-  const intersectionNumberedRe = new RegExp(
-    `(?:at\\s+the\\s+)?(?:intersection|corner)\\s+of\\s+(.+?)\\s+(?:and|&)\\s+(.+?)(?=[.,]|$)`,
-    "is"
-  );
-  const intersectionNumberedMatch = text.match(intersectionNumberedRe);
-  if (intersectionNumberedMatch && intersectionNumberedMatch[1] && intersectionNumberedMatch[2]) {
-    const part1 = intersectionNumberedMatch[1].trim();
-    const part2 = intersectionNumberedMatch[2].trim();
-    const streetTypeRe = new RegExp(`\\s+(?:${STREET_TYPES})$`, "i");
-    if (streetTypeRe.test(part1) && streetTypeRe.test(part2)) {
-      const norm1 = normalizeSpokenAddress(part1);
-      const norm2 = normalizeSpokenAddress(part2);
-      const location = `${norm1} & ${norm2} (Approximate)`;
-      console.log(`[extractAddressFromText] Pattern 6a (intersection-numbered) MATCHED: "${location}"`);
-      return { address: location, pattern: "cross-street" };
-    }
-  }
-
   // Cross-street / intersection patterns (letter-only street names)
   const crossStreetPatterns = [
     // "corner of X and Y", "intersection of X and Y"
