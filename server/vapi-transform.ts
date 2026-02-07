@@ -1712,6 +1712,7 @@ export function normalizeSpokenAddress(input: string): string {
 
   // Collect leading number words until we hit a street keyword or non-number word
   // Phase 2 Hardening: Also check for ordinals
+  // CLEAR: ASR often transcribes "21st" as "20 first" — combine digit + ordinal (e.g. 20 + first → 21st)
   for (let i = 0; i < words.length; i++) {
     const word = words[i];
     const lower = word.toLowerCase().replace(/[.,!?]/g, "");
@@ -1719,6 +1720,22 @@ export function normalizeSpokenAddress(input: string): string {
     if (foundStreetWord || STREET_KEYWORDS.has(lower)) {
       foundStreetWord = true;
       restWords.push(word);
+    } else if (/^\d+$/.test(word) && i + 1 < words.length) {
+      const nextLower = words[i + 1].toLowerCase().replace(/[.,!?]/g, "");
+      if (isOrdinalWord(nextLower)) {
+        const num = parseInt(word, 10);
+        const ordVal = getOrdinalValue(nextLower);
+        if (ordVal !== null && num >= 10 && num <= 90 && num % 10 === 0) {
+          const combined = num + ordVal;
+          ordinalResult = combined + getOrdinalSuffix(combined);
+          console.log(`[normalize] Digit+ordinal: "${word} ${nextLower}" → "${ordinalResult}"`);
+          i++;
+          foundStreetWord = true;
+          continue;
+        }
+      }
+      restWords.push(word);
+      foundStreetWord = true;
     } else if (isOrdinalWord(lower)) {
       // ============================================================
       // ORDINAL HANDLING (Phase 2 Hardening)
@@ -2086,7 +2103,27 @@ function extractAddressFromText(text: string): { address: string | null; pattern
   // Returns with "(Approximate)" suffix to indicate lower confidence.
   // ============================================================
   
-  // Cross-street / intersection patterns (most useful contextual info)
+  // 6a. Intersection of numbered/ordinal streets (e.g. "21st Street and 80th Avenue", "20 first Street and eightieth Avenue")
+  // Must run before letter-only cross-street pattern so "intersection of 20 first Street and eightieth Avenue" matches.
+  const intersectionNumberedRe = new RegExp(
+    `(?:at\\s+the\\s+)?(?:intersection|corner)\\s+of\\s+(.+?)\\s+(?:and|&)\\s+(.+?)(?=[.,]|$)`,
+    "is"
+  );
+  const intersectionNumberedMatch = text.match(intersectionNumberedRe);
+  if (intersectionNumberedMatch && intersectionNumberedMatch[1] && intersectionNumberedMatch[2]) {
+    const part1 = intersectionNumberedMatch[1].trim();
+    const part2 = intersectionNumberedMatch[2].trim();
+    const streetTypeRe = new RegExp(`\\s+(?:${STREET_TYPES})$`, "i");
+    if (streetTypeRe.test(part1) && streetTypeRe.test(part2)) {
+      const norm1 = normalizeSpokenAddress(part1);
+      const norm2 = normalizeSpokenAddress(part2);
+      const location = `${norm1} & ${norm2} (Approximate)`;
+      console.log(`[extractAddressFromText] Pattern 6a (intersection-numbered) MATCHED: "${location}"`);
+      return { address: location, pattern: "cross-street" };
+    }
+  }
+
+  // Cross-street / intersection patterns (letter-only street names)
   const crossStreetPatterns = [
     // "corner of X and Y", "intersection of X and Y"
     /(?:corner|intersection)\s+(?:of\s+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s+(?:and|&|y)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/i,
