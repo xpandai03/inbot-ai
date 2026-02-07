@@ -448,6 +448,42 @@ export class SupabaseStorage implements IStorage {
       console.error("[INSERT] error.hint:", error.hint);
       console.error("[INSERT] FULL error:", JSON.stringify(error, null, 2));
       console.error("============================================================");
+
+      // ============================================================
+      // PGRST204 GUARD: PostgREST schema cache is stale
+      // The column exists in Postgres but PostgREST doesn't see it.
+      // Targeted fallback: strip the unrecognized column and retry
+      // once so the record is not lost. This is NOT a blind retry.
+      // ============================================================
+      if (error.code === "PGRST204" && error.message?.includes("sms_consent")) {
+        console.warn("============================================================");
+        console.warn("[INSERT] POSTGREST SCHEMA CACHE STALE — sms_consent NOT RECOGNIZED");
+        console.warn("[INSERT] Attempting fallback insert WITHOUT sms_consent...");
+        console.warn("============================================================");
+
+        const { sms_consent, ...fallbackPayload } = dbRecord;
+
+        const { data: fallbackData, error: fallbackError } = await this.supabase
+          .from("interactions")
+          .insert(fallbackPayload)
+          .select()
+          .single();
+
+        if (fallbackError) {
+          console.error("[INSERT] >>>>>> FALLBACK ALSO FAILED <<<<<<");
+          console.error("[INSERT] fallback error:", JSON.stringify(fallbackError, null, 2));
+          throw new Error(`Failed to create record (fallback): ${fallbackError.message}`);
+        }
+
+        console.log("============================================================");
+        console.log("[INSERT] >>>>>> FALLBACK INSERT SUCCESS <<<<<<");
+        console.log("[INSERT] Returned row ID:", fallbackData?.id);
+        console.log("[INSERT] NOTE: sms_consent was dropped due to stale schema cache.");
+        console.log("[INSERT] Run: NOTIFY pgrst, 'reload schema'; in Supabase SQL Editor.");
+        console.log("============================================================");
+        return dbToIntakeRecord(fallbackData as DBInteraction);
+      }
+
       throw new Error(`Failed to create record: ${error.message}`);
     }
 
