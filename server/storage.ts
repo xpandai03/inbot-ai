@@ -402,7 +402,13 @@ export class SupabaseStorage implements IStorage {
   }
 
   async createRecord(insertRecord: InsertIntakeRecord, meta?: TranscriptMeta): Promise<IntakeRecord> {
-    console.log("[SupabaseStorage.createRecord] === INSERTING RECORD ===");
+    console.log("============================================================");
+    console.log("[INSERT] >>>>>> PHASE 1: BEFORE INSERT <<<<<<");
+    console.log("[INSERT] SUPABASE_URL:", process.env.SUPABASE_URL ? process.env.SUPABASE_URL.substring(0, 40) + "..." : "NOT SET");
+    console.log("[INSERT] SERVICE_ROLE_KEY:", process.env.SUPABASE_SERVICE_ROLE_KEY ? "SET (length=" + process.env.SUPABASE_SERVICE_ROLE_KEY.length + ")" : "NOT SET");
+    console.log("[INSERT] client_id:", insertRecord.clientId);
+    console.log("[INSERT] name:", insertRecord.name);
+    console.log("[INSERT] smsConsent:", insertRecord.smsConsent);
 
     // Derive address quality + needs_review before insert
     const addressQuality = deriveAddressQuality(insertRecord.address);
@@ -413,10 +419,19 @@ export class SupabaseStorage implements IStorage {
       callMetadata: meta?.callMetadata ?? null,
     });
 
-    console.log(`[SupabaseStorage.createRecord] addressQuality=${addressQuality}, needsReview=${needsReview}`);
+    console.log(`[INSERT] addressQuality=${addressQuality}, needsReview=${needsReview}`);
 
     const enrichedRecord = { ...insertRecord, addressQuality, needsReview };
     const dbRecord = intakeRecordToDB(enrichedRecord, meta);
+
+    // Log EXACT payload keys and values going to Supabase
+    console.log("[INSERT] DB payload keys:", Object.keys(dbRecord).join(", "));
+    console.log("[INSERT] DB payload (truncated):", JSON.stringify({
+      ...dbRecord,
+      raw_transcript: dbRecord.raw_transcript ? `[${dbRecord.raw_transcript.length} chars]` : null,
+      call_metadata: dbRecord.call_metadata ? "[object]" : null,
+    }));
+    console.log("============================================================");
 
     const { data, error } = await this.supabase
       .from("interactions")
@@ -425,13 +440,23 @@ export class SupabaseStorage implements IStorage {
       .single();
 
     if (error) {
-      console.error("[SupabaseStorage.createRecord] === INSERT FAILED ===");
-      console.error("[SupabaseStorage.createRecord] Error:", error);
+      console.error("============================================================");
+      console.error("[INSERT] >>>>>> INSERT FAILED <<<<<<");
+      console.error("[INSERT] error.code:", error.code);
+      console.error("[INSERT] error.message:", error.message);
+      console.error("[INSERT] error.details:", error.details);
+      console.error("[INSERT] error.hint:", error.hint);
+      console.error("[INSERT] FULL error:", JSON.stringify(error, null, 2));
+      console.error("============================================================");
       throw new Error(`Failed to create record: ${error.message}`);
     }
 
-    console.log("[SupabaseStorage.createRecord] === INSERT SUCCESS ===");
-    console.log("[SupabaseStorage.createRecord] Created ID:", data?.id);
+    console.log("============================================================");
+    console.log("[INSERT] >>>>>> INSERT SUCCESS <<<<<<");
+    console.log("[INSERT] Returned row ID:", data?.id);
+    console.log("[INSERT] Returned client_id:", (data as any)?.client_id);
+    console.log("[INSERT] Returned created_at:", (data as any)?.created_at);
+    console.log("============================================================");
     return dbToIntakeRecord(data as DBInteraction);
   }
 
