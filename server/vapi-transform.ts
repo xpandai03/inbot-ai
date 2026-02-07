@@ -2397,6 +2397,61 @@ export function extractPhoneNumber(payload: VapiWebhookPayload): string {
 }
 
 /**
+ * Extract SMS consent from artifact.messages / transcript.
+ * Context-scoped: only consider user response that follows a bot message asking for SMS consent.
+ * Returns true=opt-in, false=opt-out/unclear, null=consent not asked.
+ */
+export function extractSmsConsent(messages: VapiMessage[], transcript: string): boolean | null {
+  const CONSENT_KEYWORDS = /\b(text|sms|message|mensajes|texto|texts|optional\s*sms)\b/i;
+  const AFFIRMATIVE = /\b(yes|yeah|sure|ok|okay|sí|si|claro|por\s*favor|please|sounds\s*good)\b/i;
+  const NEGATIVE = /\b(no|nope|no\s*thanks|no\s*thank\s*you|no\s*quiero|prefiero\s*no|don't|do\s*not)\b/i;
+
+  // Prefer structured messages (last bot ask + next user reply)
+  if (messages.length >= 2) {
+    for (let i = 0; i < messages.length - 1; i++) {
+      const botMsg = messages[i];
+      const userMsg = messages[i + 1];
+      if (botMsg.role !== "bot" || userMsg.role !== "user") continue;
+      const botText = (botMsg.message || "").trim();
+      const userText = (userMsg.message || "").trim();
+      if (!CONSENT_KEYWORDS.test(botText)) continue;
+      // Bot asked for SMS consent; user reply determines outcome
+      if (AFFIRMATIVE.test(userText) && !NEGATIVE.test(userText)) {
+        console.log("[extractSmsConsent] OPT-IN (user after consent question):", userText.substring(0, 80));
+        return true;
+      }
+      if (NEGATIVE.test(userText) || userText.length < 3) {
+        console.log("[extractSmsConsent] OPT-OUT or unclear:", userText.substring(0, 80));
+        return false;
+      }
+      // Unclear reply after consent question → treat as no
+      console.log("[extractSmsConsent] Unclear reply after consent question → false");
+      return false;
+    }
+  }
+
+  // Fallback: scan transcript for "consent keyword phrase" then "yes"/"no" nearby
+  const lower = transcript.toLowerCase();
+  if (CONSENT_KEYWORDS.test(lower)) {
+    const lastConsentIdx = lower.search(CONSENT_KEYWORDS);
+    const afterConsent = transcript.slice(Math.max(0, lastConsentIdx));
+    if (AFFIRMATIVE.test(afterConsent) && !NEGATIVE.test(afterConsent)) {
+      console.log("[extractSmsConsent] OPT-IN (transcript fallback)");
+      return true;
+    }
+    if (NEGATIVE.test(afterConsent)) {
+      console.log("[extractSmsConsent] OPT-OUT (transcript fallback)");
+      return false;
+    }
+    console.log("[extractSmsConsent] Consent question present but unclear → false");
+    return false;
+  }
+
+  console.log("[extractSmsConsent] No consent question found → null");
+  return null;
+}
+
+/**
  * Transform Vapi end-of-call-report into partial IntakeRecord
  * Returns record without intent/department/summary - those are added by the classifier
  * 
@@ -2463,6 +2518,10 @@ export function transformVapiToIntakeRecord(payload: VapiWebhookPayload): Partia
   // Get phone number from FULL payload
   const phone = extractPhoneNumber(payload);
 
+  // SMS consent: only for Voice; infer from messages/transcript (context-scoped)
+  const smsConsent = extractSmsConsent(rawMessages, rawTranscript);
+  console.log("[vapi-transform] SMS consent:", smsConsent);
+
   console.log("[vapi-transform] PHONE extracted:", phone);
   console.log("[vapi-transform] rawText length:", rawIssueText?.length || 0);
   console.log("[vapi-transform] ====== EXTRACTION END ======");
@@ -2477,6 +2536,7 @@ export function transformVapiToIntakeRecord(payload: VapiWebhookPayload): Partia
     cost: msg.cost || 0,
     timestamp: msg.endedAt || new Date().toISOString(),
     clientId: "client_demo", // Hardcoded for Phase 1
+    smsConsent,
     // Raw text for classification (not stored, used by classifier)
     rawText: rawIssueText || "No description provided",
   };

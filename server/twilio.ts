@@ -3,6 +3,9 @@
  *
  * Handles SMS intake via Twilio webhooks.
  * Provides client initialization and TwiML response helpers.
+ *
+ * Outbound SMS: Only send when record.smsConsent === true.
+ * Use canSendSms(record) from @shared/schema to filter recipients (broadcast, follow-ups, manual).
  */
 
 import twilio from "twilio";

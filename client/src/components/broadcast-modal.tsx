@@ -51,7 +51,7 @@ export function BroadcastModal({ open, onOpenChange, recipientCount }: Broadcast
             <div>
               <DialogTitle className="text-lg font-semibold">Send Broadcast SMS</DialogTitle>
               <DialogDescription className="text-sm text-muted-foreground">
-                Message will be sent to {recipientCount} recipients
+                Message will be sent to {recipientCount} recipients who consented to SMS. No SMS is sent without consent.
               </DialogDescription>
             </div>
           </div>

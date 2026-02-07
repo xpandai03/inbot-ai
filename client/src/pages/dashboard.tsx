@@ -19,6 +19,7 @@ import { BroadcastModal } from "@/components/broadcast-modal";
 import { DepartmentEmailSettings } from "@/components/department-email-settings";
 import { useAuth } from "@/lib/authContext";
 import type { IntakeRecord, DashboardStats, Client } from "@shared/schema";
+import { canSendSms } from "@shared/schema";
 import {
   Shield,
   Users,
@@ -359,7 +360,7 @@ export default function Dashboard() {
         <BroadcastModal
           open={broadcastOpen}
           onOpenChange={setBroadcastOpen}
-          recipientCount={filteredRecords.length}
+          recipientCount={filteredRecords.filter(canSendSms).length}
         />
 
         <DepartmentEmailSettings

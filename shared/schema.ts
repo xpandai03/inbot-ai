@@ -26,6 +26,8 @@ export const intakeRecordSchema = z.object({
   clientId: z.string(),
   addressQuality: z.enum(ADDRESS_QUALITY_VALUES).default("missing"),
   needsReview: z.boolean().default(false),
+  /** SMS consent: true=opt-in, false=opt-out/unclear, null=not asked/legacy. No SMS unless true. */
+  smsConsent: z.boolean().nullable().optional(),
 });
 
 export const insertIntakeRecordSchema = intakeRecordSchema.omit({
@@ -36,6 +38,11 @@ export const insertIntakeRecordSchema = intakeRecordSchema.omit({
 
 export type IntakeRecord = z.infer<typeof intakeRecordSchema>;
 export type InsertIntakeRecord = z.infer<typeof insertIntakeRecordSchema>;
+
+/** No outbound SMS unless sms_consent === true. Use for filtering recipients and gating send. */
+export function canSendSms(record: { smsConsent?: boolean | null }): boolean {
+  return record.smsConsent === true;
+}
 
 export type UserRole = "client" | "superadmin";
 

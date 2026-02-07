@@ -210,6 +210,12 @@ export default function RecordDetail() {
                 </p>
               </div>
               <div>
+                <span className="text-muted-foreground">SMS Consent</span>
+                <p className="text-foreground">
+                  {record.smsConsent === true ? "Yes" : record.smsConsent === false ? "No" : "Not collected"}
+                </p>
+              </div>
+              <div>
                 <span className="text-muted-foreground">Language</span>
                 <p className="text-foreground">{record.language}</p>
               </div>

@@ -25,6 +25,12 @@ import { useToast } from "@/hooks/use-toast";
 import { Link } from "wouter";
 import type { IntakeRecord } from "@shared/schema";
 
+function formatSmsConsent(smsConsent: boolean | null | undefined): string {
+  if (smsConsent === true) return "Yes";
+  if (smsConsent === false) return "No";
+  return "Not collected";
+}
+
 interface RecordsTableProps {
   records: IntakeRecord[];
   showCost?: boolean;
@@ -144,6 +150,7 @@ export function RecordsTable({ records, showCost = false, isLoading = false, isS
             <TableHead className={`${headerBase} w-[120px]`}>Intent</TableHead>
             <TableHead className={`${headerBase} w-[85px]`}>Dept</TableHead>
             <TableHead className={`${headerBase} w-[32px] text-center`} title="Channel">Ch</TableHead>
+            <TableHead className={`${headerBase} w-[70px]`} title="SMS Consent">SMS</TableHead>
             <TableHead className={`${headerBase} w-[40px] text-right`}>Dur</TableHead>
             {showCost && (
               <TableHead className={`${headerBase} w-[50px] text-right`}>Cost</TableHead>
@@ -182,6 +189,9 @@ export function RecordsTable({ records, showCost = false, isLoading = false, isS
               </TableCell>
               <TableCell className={`${cellClass} text-xs text-muted-foreground tabular-nums truncate`}>
                 {record.phone || (record.channel === "Voice" ? "(Web)" : "-")}
+              </TableCell>
+              <TableCell className={`${cellClass} text-xs text-muted-foreground`} title="SMS consent">
+                {formatSmsConsent(record.smsConsent)}
               </TableCell>
               <TableCell className={`${cellClass} text-xs text-muted-foreground`} title={record.address}>
                 <div className="flex items-center gap-1 min-w-0">

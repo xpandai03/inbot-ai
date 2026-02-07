@@ -25,6 +25,8 @@ export interface DBInteraction {
   // Address quality flags (added 2026-02-05)
   address_quality: AddressQuality;
   needs_review: boolean;
+  // SMS consent (added 2026-02-07): true=opt-in, false=opt-out/unclear, null=not asked/legacy
+  sms_consent: boolean | null;
 }
 
 // Database row type for evaluation_history table
@@ -62,6 +64,7 @@ export function dbToIntakeRecord(row: DBInteraction): IntakeRecord {
     clientId: row.client_id,
     addressQuality: row.address_quality ?? "missing",
     needsReview: row.needs_review ?? false,
+    smsConsent: row.sms_consent ?? null,
   };
 }
 
@@ -98,7 +101,7 @@ export function dbToEvaluationEntry(row: DBEvaluationHistory): EvaluationEntry {
 
 // Transform App type -> DB insert
 export function intakeRecordToDB(
-  record: InsertIntakeRecord & { addressQuality?: AddressQuality; needsReview?: boolean },
+  record: InsertIntakeRecord & { addressQuality?: AddressQuality; needsReview?: boolean; smsConsent?: boolean | null },
   meta?: {
     rawTranscript?: string;
     recordingUrl?: string;
@@ -126,6 +129,7 @@ export function intakeRecordToDB(
     updated_at: null,
     address_quality: record.addressQuality ?? "missing",
     needs_review: record.needsReview ?? false,
+    sms_consent: record.smsConsent ?? null,
   };
 }
 
