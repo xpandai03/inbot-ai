@@ -368,12 +368,16 @@ export async function registerRoutes(
       // Fall back to rawTranscript (msg.transcript or legacy buildRawIssueText)
       const cmeta = record.callMetadata || {};
       const extractionText = (cmeta['extractionText'] as string | undefined) || record.rawTranscript;
+      const artifactMessages = cmeta['artifactMessages'] as Array<{ role: string; message: string; time?: number }> | undefined;
       console.log(`[re-evaluate] Input source: ${cmeta['extractionText'] ? 'callMetadata.extractionText' : 'rawTranscript'}`);
+      console.log(`[re-evaluate] Artifact messages: ${artifactMessages?.length ?? 0} (same passes as first-pass when present)`);
 
       const result = await reEvaluate({
         rawTranscript: extractionText,
         channel: record.channel,
         clientId: record.clientId,
+        artifactMessages: artifactMessages ?? undefined,
+        currentAddress: record.address,
       });
 
       // Create candidate evaluation entry
@@ -679,6 +683,8 @@ export async function registerRoutes(
       console.log("[VAPI] Inserting record into database...");
       // Store msg.transcript as raw_transcript (for UI transcript viewer / audit)
       // Store concatenated artifact.messages in callMetadata.extractionText (for re-eval parity)
+      // CLEAR: Store artifact.messages for re-eval so Pass A/B run (last-confirmed-wins)
+      const artifactMessages = vapiPayload.message?.artifact?.messages;
       const newRecord = await storage.createRecord(validation.data, {
         rawTranscript: callMetadata.transcript || rawText || undefined,
         recordingUrl: callMetadata.recordingUrl || undefined,
@@ -688,6 +694,7 @@ export async function registerRoutes(
           analysisSuccess: callMetadata.analysisSuccess,
           callId,
           extractionText: rawText || undefined,
+          artifactMessages: artifactMessages ?? undefined,
         },
       });
       console.log("[VAPI] === INSERT SUCCESS === ID:", newRecord.id);

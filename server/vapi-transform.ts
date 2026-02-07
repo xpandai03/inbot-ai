@@ -632,18 +632,24 @@ export function validateExtractedName(name: string): string | null {
 
 // Patterns that indicate non-address values
 // Phase 2 Hardening: Added question/prompt phrases from AI agent
+// CLEAR English hardening: Reject vague phrases (in the street, on the street, etc.)
 const NON_ADDRESS_PATTERNS = [
   // Vague location references
   /^not\s*sure/i,
   /^don'?t\s*know/i,
-  /^somewhere/i,
+  /^somewhere(?!\s+on\s+(?:the\s+)?(?:street|road|avenue|drive))/i, // allow "somewhere on Main Street"
   /^around\s*here/i,
   /^near\s*(the|my)/i,
   /^by\s*the/i,
   /^behind\s*(the|a)/i,
   /^in\s*front\s*of/i,
-  /^across\s*from/i,
+  /^across\s*from$/i, // reject only when ENTIRE string is "across from" (numeric capture used for "across from 123 Main")
   /^next\s*to/i,
+  // Vague phrases without a real street name (CLEAR hardening)
+  /^in\s+the\s+street$/i,
+  /^on\s+the\s+street$/i,
+  /^somewhere\s+on\s+(?:the\s+)?road$/i,
+  /^somewhere\s+on\s+(?:the\s+)?street$/i,
   
   // ============================================================
   // AI AGENT QUESTION PHRASES (must not be captured as addresses)
@@ -833,6 +839,45 @@ export function validateExtractedAddress(address: string): string | null {
 
   // All checks passed
   console.log(`[validate-address] ACCEPTED: "${cleaned}"`);
+  return cleaned;
+}
+
+/**
+ * Relaxed address validation for re-eval "try harder" when current record is bad.
+ * Same rules as validateExtractedAddress but min length 4 to accept short partials.
+ */
+export function validateExtractedAddressRelaxed(address: string): string | null {
+  if (!address || address.trim().length === 0) return null;
+  let cleaned = address.trim();
+  cleaned = cleaned.replace(/\s*-{2,}\s*/g, " ");
+  cleaned = cleaned.replace(/\b(um|uh|er|ah|like|you know)\b/gi, " ");
+  cleaned = cleaned.replace(/\s+/g, " ").trim();
+  if (cleaned.length < 4) return null;
+  for (const pattern of NON_ADDRESS_PATTERNS) {
+    if (pattern.test(cleaned)) return null;
+  }
+  const words = cleaned.split(/\s+/);
+  if (words.length === 2) {
+    const [first, second] = words;
+    const streetTypeOnly = new RegExp(`^(${STREET_TYPES})$`, "i");
+    if (/^\d+$/.test(first) && streetTypeOnly.test(second)) return null;
+  }
+  const firstWord = words[0]?.toLowerCase();
+  const VALID_ADDRESS_STARTERS = [
+    /^\d/,
+    /^(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred)/i,
+    /^(uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce|trece|catorce|quince|veinte|treinta|cuarenta|cincuenta)/i,
+    /^(calle|avenida|av|pasaje|camino|carretera|plaza|paseo|bulevar)/i,
+    /^(corner|intersection|esquina|cruce)/i,
+    /\(approximate\)$/i,
+  ];
+  const STREET_TYPES_PATTERN_REL = new RegExp(`(${STREET_TYPES})$`, "i");
+  const endsWithStreetType = STREET_TYPES_PATTERN_REL.test(cleaned);
+  const hasValidStart = VALID_ADDRESS_STARTERS.some(pattern => {
+    if (pattern.source.endsWith('$')) return pattern.test(cleaned);
+    return pattern.test(firstWord) || pattern.test(cleaned);
+  });
+  if (!hasValidStart && !endsWithStreetType) return null;
   return cleaned;
 }
 
@@ -1986,6 +2031,54 @@ function extractAddressFromText(text: string): { address: string | null; pattern
   }
 
   // ============================================================
+  // Pattern 5b: ENGLISH HARDENING — "between X and Y", "block of", "across from"
+  // ============================================================
+  // Added for CLEAR framework: common real-world English phrasing.
+  // Inserted before generic contextual fallbacks.
+  // ============================================================
+
+  // A. "Between X and Y" / "between X and Y Street"
+  const betweenPatterns = [
+    // "between Oak and Main Street", "it's between Pine and 3rd Avenue"
+    new RegExp(`between\\s+([A-Za-z][A-Za-z'-]*)\\s+and\\s+([A-Za-z0-9][A-Za-z0-9'-]*(?:\\s+(?:${STREET_TYPES}))?)`, "i"),
+  ];
+  for (const pattern of betweenPatterns) {
+    const match = text.match(pattern);
+    if (match && match[1] && match[2]) {
+      const a = match[1].trim();
+      const b = match[2].trim();
+      const location = `${a} & ${b} (Approximate)`;
+      console.log(`[extractAddressFromText] Pattern 5b (between) MATCHED: "${location}"`);
+      return { address: location, pattern: "cross-street" };
+    }
+  }
+
+  // B. "Block of [Street]" — partial but usable
+  const blockOfPattern = new RegExp(
+    `(?:on\\s+(?:the\\s+)?)?block\\s+of\\s+([A-Za-z][A-Za-z'-]*(?:\\s+[A-Za-z][A-Za-z'-]*)*\\s+(?:${STREET_TYPES}))`,
+    "i"
+  );
+  const blockMatch = text.match(blockOfPattern);
+  if (blockMatch && blockMatch[1]) {
+    const street = blockMatch[1].replace(/[.,!?]$/, "").trim();
+    const location = `${street} (Approximate)`;
+    console.log(`[extractAddressFromText] Pattern 5b (block-of) MATCHED: "${location}"`);
+    return { address: location, pattern: "contextual-block" };
+  }
+
+  // C. "Across from [numeric address]" — capture only the address part
+  const acrossFromPattern = new RegExp(
+    `across\\s+from\\s+(\\d{1,6}\\s+[A-Za-z][A-Za-z'-]*(?:\\s+[A-Za-z][A-Za-z'-]*)*\\s+(?:${STREET_TYPES}))`,
+    "i"
+  );
+  const acrossMatch = text.match(acrossFromPattern);
+  if (acrossMatch && acrossMatch[1]) {
+    const address = acrossMatch[1].replace(/[.,!?]$/, "").trim();
+    console.log(`[extractAddressFromText] Pattern 5b (across-from) MATCHED: "${address}"`);
+    return { address, pattern: "numeric" };
+  }
+
+  // ============================================================
   // Pattern 6: CONTEXTUAL LOCATION PATTERNS (Phase 2 Hardening)
   // ============================================================
   // These capture approximate/contextual locations when no specific address is given.
@@ -2036,6 +2129,12 @@ function extractAddressFromText(text: string): { address: string | null; pattern
   return { address: null, pattern: "no match" };
 }
 
+/** Options for extractAddress (CLEAR re-eval hardening). */
+export interface ExtractAddressOptions {
+  /** When true, use relaxed validation so re-eval can upgrade bad records. */
+  tryHarder?: boolean;
+}
+
 /**
  * Extract street address from transcript (two-pass)
  * Pass A: artifact.messages (structured)
@@ -2044,8 +2143,13 @@ function extractAddressFromText(text: string): { address: string | null; pattern
  * Applies spoken number normalization and validation before returning:
  *   "Eleven twenty two Main Street" → "1122 Main Street"
  */
-export function extractAddress(messages: VapiMessage[], transcript?: string): { address: string; source: string } {
-  console.log("[extractAddress] ====== ADDRESS EXTRACTION START ======");
+export function extractAddress(
+  messages: VapiMessage[],
+  transcript?: string,
+  options?: ExtractAddressOptions
+): { address: string; source: string } {
+  const tryHarder = options?.tryHarder === true;
+  console.log("[extractAddress] ====== ADDRESS EXTRACTION START ======", tryHarder ? "(tryHarder)" : "");
 
   const userMessages = messages.filter(m => m.role === "user");
   // Phase 3 Hardening: Also scan bot messages (assistant confirmations often
@@ -2064,6 +2168,7 @@ export function extractAddress(messages: VapiMessage[], transcript?: string): { 
   // ============================================================
 
   let contextualCandidate: { address: string; source: string } | null = null;
+  const validate = tryHarder ? validateExtractedAddressRelaxed : validateExtractedAddress;
 
   // Helper: try extracting from a text block, return specific address or save contextual
   const tryExtract = (text: string, sourceLabel: string): { address: string; source: string } | null => {
@@ -2072,7 +2177,7 @@ export function extractAddress(messages: VapiMessage[], transcript?: string): { 
 
     const isContextual = result.pattern.startsWith("contextual-") || result.pattern === "cross-street";
     const normalized = normalizeSpokenAddress(result.address);
-    const validated = validateExtractedAddress(normalized);
+    const validated = validate(normalized);
 
     if (!validated) {
       console.log(`[extractAddress] → Validation REJECTED: "${normalized}" from ${sourceLabel}`);
