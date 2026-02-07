@@ -190,9 +190,6 @@ export function RecordsTable({ records, showCost = false, isLoading = false, isS
               <TableCell className={`${cellClass} text-xs text-muted-foreground tabular-nums truncate`}>
                 {record.phone || (record.channel === "Voice" ? "(Web)" : "-")}
               </TableCell>
-              <TableCell className={`${cellClass} text-xs text-muted-foreground`} title="SMS consent">
-                {formatSmsConsent(record.smsConsent)}
-              </TableCell>
               <TableCell className={`${cellClass} text-xs text-muted-foreground`} title={record.address}>
                 <div className="flex items-center gap-1 min-w-0">
                   <span className="truncate">{record.address || "-"}</span>
@@ -236,6 +233,9 @@ export function RecordsTable({ records, showCost = false, isLoading = false, isS
                 ) : (
                   <MessageSquare className="w-3.5 h-3.5 text-muted-foreground mx-auto" />
                 )}
+              </TableCell>
+              <TableCell className={`${cellClass} text-xs text-muted-foreground`} title="SMS consent">
+                {formatSmsConsent(record.smsConsent)}
               </TableCell>
               <TableCell className={`${cellClass} text-xs text-muted-foreground tabular-nums text-right`}>
                 {formatDuration(record.durationSeconds)}
