@@ -85,6 +85,11 @@ export function deriveNeedsReview(input: NeedsReviewInput): boolean {
     return true;
   }
 
+  // Degraded or bot-only transcript quality
+  if (input.callMetadata?.callQuality === "degraded" || input.callMetadata?.callQuality === "bot-only") {
+    return true;
+  }
+
   // Voice channel: check call metadata for abnormal ending or failed analysis
   if (input.channel === "Voice" && input.callMetadata) {
     const endedReason = input.callMetadata.endedReason as string | undefined;

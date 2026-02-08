@@ -654,7 +654,7 @@ export async function registerRoutes(
       console.log("[VAPI] Transforming payload...");
       const vapiPayload = payload as VapiWebhookPayload;
       const partialRecord = transformVapiToIntakeRecord(vapiPayload);
-      const { rawText, ...recordFields } = partialRecord;
+      const { rawText, extractionMeta, ...recordFields } = partialRecord;
 
       // Extract call metadata for email notifications (recording URL, transcript)
       const callMetadata = extractCallMetadata(vapiPayload);
@@ -695,6 +695,8 @@ export async function registerRoutes(
           callId,
           extractionText: rawText || undefined,
           artifactMessages: artifactMessages ?? undefined,
+          callQuality: extractionMeta.callQuality,
+          languageConfidence: extractionMeta.languageConfidence,
         },
       });
       console.log("[VAPI] === INSERT SUCCESS === ID:", newRecord.id);

@@ -2353,21 +2353,32 @@ export function buildRawIssueText(messages: VapiMessage[]): string {
 /**
  * Detect language from transcript (simple heuristic)
  * Phase 1 Spanish Hardening: Expanded Spanish indicators
+ * Phase 2: Returns confidence score for quality gating
  */
-export function detectLanguage(messages: VapiMessage[]): string {
+export function detectLanguage(messages: VapiMessage[]): { language: string; confidence: number } {
   const userText = messages
     .filter(m => m.role === "user")
     .map(m => m.message)
     .join(" ");
 
-  // Expanded Spanish detection - check for common Spanish words and patterns
-  // Includes greetings, common verbs, articles, and domain-specific words
-  const spanishIndicators = /\b(hola|gracias|por favor|calle|donde|necesito|problema|ayuda|buenos d[ií]as|buenas tardes|buenas noches|me llamo|mi nombre|tengo|hay|est[aá]|quiero|puedo|bache|basura|factura|luz|agua|el|la|los|las|un|una|unos|unas|que|como|cuando|porque|pero|para|con|sin|sobre|hasta|desde|entre)\b/i;
-  if (spanishIndicators.test(userText)) {
-    return "Spanish";
+  // No user text → default to English with zero confidence
+  if (!userText || userText.trim().length === 0) {
+    return { language: "English", confidence: 0 };
   }
 
-  return "English";
+  // Expanded Spanish detection - check for common Spanish words and patterns
+  // Includes greetings, common verbs, articles, and domain-specific words
+  const spanishIndicators = /\b(hola|gracias|por favor|calle|donde|necesito|problema|ayuda|buenos d[ií]as|buenas tardes|buenas noches|me llamo|mi nombre|tengo|hay|est[aá]|quiero|puedo|bache|basura|factura|luz|agua|el|la|los|las|un|una|unos|unas|que|como|cuando|porque|pero|para|con|sin|sobre|hasta|desde|entre)\b/gi;
+  const words = userText.trim().split(/\s+/);
+  const totalWords = words.length;
+  const spanishMatches = (userText.match(spanishIndicators) || []).length;
+  const spanishRatio = totalWords > 0 ? spanishMatches / totalWords : 0;
+
+  if (spanishRatio >= 0.15 && spanishMatches >= 2) {
+    return { language: "Spanish", confidence: Math.min(spanishRatio * 3, 1.0) };
+  }
+
+  return { language: "English", confidence: 1.0 - spanishRatio };
 }
 
 /**
@@ -2451,14 +2462,66 @@ export function extractSmsConsent(messages: VapiMessage[], transcript: string): 
   return null;
 }
 
+// ============================================================
+// Transcript quality classification
+// ============================================================
+
+export type CallQuality = "good" | "degraded" | "bot-only";
+
+export interface TranscriptQualityResult {
+  quality: CallQuality;
+  userMessageCount: number;
+  botMessageCount: number;
+  totalUserChars: number;
+  reason: string;
+}
+
+export interface ExtractionMeta {
+  callQuality: CallQuality;
+  languageConfidence: number;
+}
+
+function classifyTranscriptQuality(
+  messages: VapiMessage[],
+  transcript: string
+): TranscriptQualityResult {
+  const userMessages = messages.filter(m => m.role === "user");
+  const botMessages = messages.filter(m => m.role === "bot");
+  const totalUserChars = userMessages.reduce((sum, m) => sum + (m.message || "").length, 0);
+
+  let quality: CallQuality;
+  let reason: string;
+
+  if (userMessages.length === 0) {
+    quality = "bot-only";
+    reason = "no user messages";
+  } else if (totalUserChars < 50) {
+    quality = "degraded";
+    reason = "user text below 50 char threshold";
+  } else {
+    quality = "good";
+    reason = "sufficient user content";
+  }
+
+  console.log(`[vapi-transform] Call quality: ${quality} (users=${userMessages.length}, chars=${totalUserChars}) — ${reason}`);
+
+  return {
+    quality,
+    userMessageCount: userMessages.length,
+    botMessageCount: botMessages.length,
+    totalUserChars,
+    reason,
+  };
+}
+
 /**
  * Transform Vapi end-of-call-report into partial IntakeRecord
  * Returns record without intent/department/summary - those are added by the classifier
- * 
+ *
  * Phase 1 Hardening: Uses multi-candidate scoring for name extraction
  * and cross-field validation to prevent address bleeding into name.
  */
-export function transformVapiToIntakeRecord(payload: VapiWebhookPayload): PartialIntakeRecord & { rawText: string } {
+export function transformVapiToIntakeRecord(payload: VapiWebhookPayload): PartialIntakeRecord & { rawText: string; extractionMeta: ExtractionMeta } {
   const msg = payload.message;
   const rawMessages = msg.artifact?.messages || [];
   const rawTranscript = msg.transcript || "";
@@ -2467,6 +2530,60 @@ export function transformVapiToIntakeRecord(payload: VapiWebhookPayload): Partia
   console.log("[vapi-transform] artifact.messages count:", rawMessages.length);
   console.log("[vapi-transform] transcript length:", rawTranscript.length);
   console.log("[vapi-transform] transcript preview:", rawTranscript.substring(0, 200));
+
+  // ============================================================
+  // Quality classification — must run before any extraction
+  // ============================================================
+  const qualityResult = classifyTranscriptQuality(rawMessages, rawTranscript);
+  const { quality } = qualityResult;
+
+  // Detect language (uses RAW messages — safe even for bot-only calls)
+  const langResult = detectLanguage(rawMessages);
+  const language = langResult.confidence < 0.7 ? "English" : langResult.language;
+  console.log(`[vapi-transform] Language: ${language} (detected: ${langResult.language}, confidence: ${langResult.confidence.toFixed(2)})`);
+
+  // ============================================================
+  // Quality gate — skip semantic extraction for bot-only / degraded
+  // ============================================================
+  if (quality === "bot-only" || quality === "degraded") {
+    console.log(`[vapi-transform] QUALITY GATE: ${quality} — skipping extraction, using safe defaults`);
+
+    // Build rawIssueText for the record even in degraded mode
+    const concatenatedMessages = buildRawIssueText(rawMessages);
+    const hasArtifactMessages = concatenatedMessages && concatenatedMessages !== "No issue description provided";
+    let rawIssueText = hasArtifactMessages ? concatenatedMessages : rawTranscript;
+    if (!rawIssueText && msg.analysis?.summary) {
+      rawIssueText = msg.analysis.summary;
+    }
+
+    const phone = extractPhoneNumber(payload);
+    const smsConsent = extractSmsConsent(rawMessages, rawTranscript);
+
+    console.log("[vapi-transform] PHONE extracted:", phone);
+    console.log("[vapi-transform] ====== EXTRACTION END (quality-gated) ======");
+
+    return {
+      name: "Unknown Caller",
+      phone,
+      address: "Not provided",
+      channel: "Voice",
+      language,
+      durationSeconds: Math.round(msg.durationSeconds || 0),
+      cost: msg.cost || 0,
+      timestamp: msg.endedAt || new Date().toISOString(),
+      clientId: "client_demo",
+      smsConsent,
+      rawText: rawIssueText || "No description provided",
+      extractionMeta: {
+        callQuality: quality,
+        languageConfidence: langResult.confidence,
+      },
+    };
+  }
+
+  // ============================================================
+  // Full extraction path (quality === "good")
+  // ============================================================
 
   // Clean messages for extraction (Fix 4)
   const messages = cleanMessagesForExtraction(rawMessages);
@@ -2512,9 +2629,6 @@ export function transformVapiToIntakeRecord(payload: VapiWebhookPayload): Partia
   const nameResult = extractName(messages, extractionTranscript, addressResult.address);
   console.log("[vapi-transform] NAME extracted:", nameResult.name, "| source:", nameResult.source);
 
-  // Detect language (uses RAW messages - LLM handles filler words fine)
-  const language = detectLanguage(rawMessages);
-
   // Get phone number from FULL payload
   const phone = extractPhoneNumber(payload);
 
@@ -2535,10 +2649,13 @@ export function transformVapiToIntakeRecord(payload: VapiWebhookPayload): Partia
     durationSeconds: Math.round(msg.durationSeconds || 0),
     cost: msg.cost || 0,
     timestamp: msg.endedAt || new Date().toISOString(),
-    clientId: "client_demo", // Hardcoded for Phase 1
+    clientId: "client_demo",
     smsConsent,
-    // Raw text for classification (not stored, used by classifier)
     rawText: rawIssueText || "No description provided",
+    extractionMeta: {
+      callQuality: quality,
+      languageConfidence: langResult.confidence,
+    },
   };
 }
 
