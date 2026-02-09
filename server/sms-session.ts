@@ -1,23 +1,22 @@
 /**
  * SMS Session Management for Guided Intake
  *
- * Implements a lightweight, goal-oriented SMS intake agent that collects
- * name, address, and issue through a minimal guided flow.
+ * Implements an order-agnostic, multi-turn SMS intake agent that collects
+ * name, address, and issue regardless of message order.
  *
  * Key behaviors:
- * - At most ONE follow-up per missing field
- * - Terminates cleanly after completion or max follow-ups
- * - Session state is phone-scoped and ephemeral (in-memory only)
- * - TTL-based cleanup prevents memory leaks
+ * - Order-agnostic: extracts all fields from every message
+ * - Last message wins: corrections overwrite previous values
+ * - Only completes when name + address + issue are all present
+ * - Asks for ONE missing field at a time (issue → address → name)
+ * - Minimal confirmation: "Got it.", "Updated.", no read-backs
+ * - TTL and max-message safety guards prevent runaway sessions
  */
 
 import { extractSmsFields, type SmsExtractionResult } from "./vapi-transform";
 
 // ============================================================
 // FEATURE FLAG
-// ============================================================
-// Set SMS_GUIDED_INTAKE_ENABLED=true to enable guided SMS flow
-// When disabled, old single-pass behavior is used
 // ============================================================
 
 export function isGuidedSmsEnabled(): boolean {
@@ -28,6 +27,8 @@ export function isGuidedSmsEnabled(): boolean {
 // SESSION INTERFACE
 // ============================================================
 
+export type SmsFieldName = "name" | "address" | "issue";
+
 export interface SmsSession {
   phoneNumber: string;        // E.164 format, session key
   createdAt: Date;
@@ -35,10 +36,10 @@ export interface SmsSession {
   name: string | null;
   address: string | null;
   issue: string | null;
-  askedForName: boolean;      // true = already asked once
-  askedForAddress: boolean;
   messageHistory: string[];   // raw messages for classification
-  messageCount: number;       // track number of messages in session
+  messageCount: number;
+  askedFields: Set<SmsFieldName>;
+  completed: boolean;
 }
 
 // ============================================================
@@ -54,13 +55,14 @@ const MAX_SESSIONS = 10000;                 // Memory safeguard
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
 // ============================================================
-// FOLLOW-UP TEMPLATES
+// FOLLOW-UP TEMPLATES (minimal, no read-backs)
 // ============================================================
 
-const FOLLOW_UP_NAME = "Thanks! To help us serve you, could you share your name?";
-const FOLLOW_UP_ADDRESS = "Got it! What's the street address for this issue?";
+const FOLLOW_UP_ISSUE = "Thanks for reaching out! What issue would you like to report?";
+const FOLLOW_UP_ADDRESS = "Got it. What's the street address where this is happening?";
+const FOLLOW_UP_NAME = "Thanks. Could you share your full name for our records?";
 const THANK_YOU_TEMPLATE = (refId: string) =>
-  `Thank you for your report. Reference #${refId}. A representative will follow up.`;
+  `Thank you. Your report has been recorded. Reference #${refId}.`;
 
 // ============================================================
 // RESULT TYPES
@@ -68,8 +70,9 @@ const THANK_YOU_TEMPLATE = (refId: string) =>
 
 export type SmsFlowResult =
   | { action: "ask_followup"; message: string; session: SmsSession }
-  | { action: "complete"; session: SmsSession; reason: "all_fields" | "followups_exhausted" | "max_messages" }
-  | { action: "timeout"; session: SmsSession; hadData: boolean };
+  | { action: "complete"; session: SmsSession; reason: "all_fields" | "max_messages" }
+  | { action: "timeout"; session: SmsSession; hadData: boolean }
+  | { action: "cancelled"; session: SmsSession };
 
 export interface SmsSessionDebugInfo {
   phoneLast4: string;
@@ -78,10 +81,10 @@ export interface SmsSessionDebugInfo {
   hasName: boolean;
   hasAddress: boolean;
   hasIssue: boolean;
-  askedForName: boolean;
-  askedForAddress: boolean;
+  askedFields: string[];
   messageCount: number;
   ageMs: number;
+  completed: boolean;
 }
 
 // ============================================================
@@ -119,10 +122,10 @@ export function getOrCreateSession(phoneNumber: string): SmsSession {
     name: null,
     address: null,
     issue: null,
-    askedForName: false,
-    askedForAddress: false,
     messageHistory: [],
     messageCount: 0,
+    askedFields: new Set(),
+    completed: false,
   };
 
   // Memory safeguard: if we hit max sessions, remove oldest
@@ -165,19 +168,88 @@ export function isSessionExpired(session: SmsSession): boolean {
 }
 
 // ============================================================
+// CANCEL / STOP DETECTION
+// ============================================================
+
+const CANCEL_PATTERNS = /^\s*(cancel|stop|quit|end|nevermind|never\s*mind)\s*[.!]?\s*$/i;
+
+function isCancelMessage(text: string): boolean {
+  return CANCEL_PATTERNS.test(text.trim());
+}
+
+// ============================================================
+// ISSUE DETECTION
+// ============================================================
+
+/**
+ * Detect if a message contains an issue/problem description.
+ * Returns the issue text if found, null otherwise.
+ *
+ * An issue is anything that describes a problem, complaint, or report —
+ * NOT just a name or address response.
+ */
+function detectIssue(rawMessage: string, extraction: SmsExtractionResult): string | null {
+  const trimmed = rawMessage.trim();
+  if (!trimmed) return null;
+
+  // If extraction found both name and address, the rest is likely context
+  // but the whole message describes the issue
+  const hasExtractedName = extraction.nameSource !== "default";
+  const hasExtractedAddress = extraction.addressSource !== "default";
+
+  // If the message is ONLY a name (short, no address-like content, no verbs),
+  // it's probably a response to "What's your name?" — NOT an issue.
+  if (hasExtractedName && !hasExtractedAddress && trimmed.split(/\s+/).length <= 3 && !looksLikeIssue(trimmed)) {
+    return null;
+  }
+
+  // If the message is ONLY an address, it's not an issue.
+  if (hasExtractedAddress && !hasExtractedName && !looksLikeIssue(trimmed)) {
+    return null;
+  }
+
+  // If the message contains issue-like language, it's an issue
+  if (looksLikeIssue(trimmed)) {
+    return trimmed;
+  }
+
+  // If extraction found name+address in a longer message, the full message is the issue
+  if (hasExtractedName && hasExtractedAddress && trimmed.length > 30) {
+    return trimmed;
+  }
+
+  // Long messages (>50 chars) that aren't pure name/address are likely issues
+  if (trimmed.length > 50) {
+    return trimmed;
+  }
+
+  return null;
+}
+
+/**
+ * Heuristic: does the text look like it describes a problem/issue?
+ */
+function looksLikeIssue(text: string): boolean {
+  const issuePatterns = /\b(report|pothole|leak|flood|broken|damage|trash|garbage|graffiti|noise|homeless|abandoned|fire|smoke|sewer|drain|water|light|pole|cable|hanging|down|out|blocked|clogged|someone|person|backyard|front\s*yard|sidewalk|street|road|park|alley|problem|issue|complaint|hazard|danger|emergency|smell|odor|animal|dog|cat|rat|mice|roach|bed\s*bug|mold|code\s*violation|illegal|dumping|construction|tree|branch|fallen|overgrown|weed|sign|signal|crosswalk|speed|loud|music|party|fight|suspicious|vehicle|car|parking|tow|abandon|vacant|boarded)\b/i;
+  // Spanish issue keywords
+  const spanishIssuePatterns = /\b(reportar|bache|fuga|inundaci[oó]n|roto|basura|grafiti|ruido|incendio|humo|drenaje|agua|luz|poste|cable|colgando|ca[ií]do|bloqueado|alguien|persona|problema|queja|peligro|emergencia|olor|animal|perro|gato|rata|cucaracha|moho|violaci[oó]n|ilegal|construcci[oó]n|[aá]rbol|rama|maleza|se[nñ]al)\b/i;
+
+  return issuePatterns.test(text) || spanishIssuePatterns.test(text);
+}
+
+// ============================================================
 // GUIDED FLOW LOGIC
 // ============================================================
 
 /**
- * Process an incoming SMS with session state
+ * Process an incoming SMS with session state.
  *
- * Flow logic:
- * 1. Get/create session for phone number
- * 2. Extract fields from current message (reuse extractSmsFields)
- * 3. Merge extracted fields into session
- * 4. If all fields present -> COMPLETE
- * 5. If missing field AND not yet asked -> ASK (mark as asked)
- * 6. If missing field AND already asked -> COMPLETE with defaults
+ * Order-agnostic flow:
+ * 1. Check for cancel/stop
+ * 2. Extract ALL fields from current message
+ * 3. Merge into session (last message wins)
+ * 4. If all fields present → COMPLETE
+ * 5. Ask for next missing field (issue → address → name)
  */
 export async function processSmsWithSession(
   phoneNumber: string,
@@ -189,6 +261,13 @@ export async function processSmsWithSession(
   if (isSessionExpired(session)) {
     const hadData = !!(session.name || session.address || session.issue);
     return { action: "timeout", session, hadData };
+  }
+
+  // Check for cancel/stop
+  if (isCancelMessage(messageBody)) {
+    console.log(`[sms-session] CANCEL phone=*${phoneNumber.slice(-4)}`);
+    session.completed = true;
+    return { action: "cancelled", session };
   }
 
   // Update session
@@ -206,99 +285,180 @@ export async function processSmsWithSession(
 
   // Extract fields from current message
   const extraction = await extractSmsFields(messageBody);
-  console.log(`[sms-session] EXTRACT name=${extraction.name} address=${extraction.address}`);
+  console.log(`[sms-session] EXTRACT name=${extraction.name}(${extraction.nameSource}) address=${extraction.address}(${extraction.addressSource})`);
 
-  // Merge extracted fields into session
+  // Merge extracted fields into session (last message wins)
   mergeExtractionIntoSession(session, extraction, messageBody);
 
-  // Check completion state
-  const result = determineNextAction(session);
-
-  console.log(`[sms-session] ACTION=${result.action} phone=*${phoneNumber.slice(-4)}`);
+  // Determine next action
+  const result = determineNextAction(session, messageBody, extraction);
+  console.log(`[sms-session] ACTION=${result.action} phone=*${phoneNumber.slice(-4)} name=${!!session.name} addr=${!!session.address} issue=${!!session.issue}`);
 
   return result;
 }
 
 /**
- * Merge extraction results into session state
- * Only updates fields that weren't already set
+ * Merge extraction results into session state.
+ * LAST MESSAGE WINS — corrections overwrite previous values.
  */
 function mergeExtractionIntoSession(
   session: SmsSession,
   extraction: SmsExtractionResult,
   rawMessage: string
 ): void {
-  // Update name if we got a real one (not default)
-  if (extraction.nameSource !== "default" && !session.name) {
+  const phoneLast4 = session.phoneNumber.slice(-4);
+
+  // Name: always overwrite if extraction found a real name
+  if (extraction.nameSource !== "default") {
+    const prev = session.name;
     session.name = extraction.name;
-    console.log(`[sms-session] UPDATE phone=*${session.phoneNumber.slice(-4)} field=name value=${extraction.name}`);
+    if (prev && prev !== extraction.name) {
+      console.log(`[sms-session] OVERWRITE phone=*${phoneLast4} field=name "${prev}" → "${extraction.name}"`);
+    } else if (!prev) {
+      console.log(`[sms-session] SET phone=*${phoneLast4} field=name value="${extraction.name}"`);
+    }
   }
 
-  // Update address if we got a real one (not default)
-  if (extraction.addressSource !== "default" && !session.address) {
+  // Address: always overwrite if extraction found a real address
+  if (extraction.addressSource !== "default") {
+    const prev = session.address;
     session.address = extraction.address;
-    console.log(`[sms-session] UPDATE phone=*${session.phoneNumber.slice(-4)} field=address value=${extraction.address}`);
+    if (prev && prev !== extraction.address) {
+      console.log(`[sms-session] OVERWRITE phone=*${phoneLast4} field=address "${prev}" → "${extraction.address}"`);
+    } else if (!prev) {
+      console.log(`[sms-session] SET phone=*${phoneLast4} field=address value="${extraction.address}"`);
+    }
   }
 
-  // Issue is always the combined message history
-  // For classification, we'll use all messages
-  session.issue = session.messageHistory.join(" | ");
+  // Issue: detect from message content (not auto-set from history)
+  const detectedIssue = detectIssue(rawMessage, extraction);
+  if (detectedIssue) {
+    const prev = session.issue;
+    session.issue = detectedIssue;
+    if (prev && prev !== detectedIssue) {
+      console.log(`[sms-session] OVERWRITE phone=*${phoneLast4} field=issue "${prev.substring(0, 40)}..." → "${detectedIssue.substring(0, 40)}..."`);
+    } else if (!prev) {
+      console.log(`[sms-session] SET phone=*${phoneLast4} field=issue value="${detectedIssue.substring(0, 60)}..."`);
+    }
+  }
 
-  // Special case: If this is a follow-up response and we asked for something,
-  // accept the raw message as that field (even if extraction didn't find it)
+  // Follow-up acceptance: if we asked for a specific field and the user replied
+  // with something the extractor didn't recognize, accept it leniently.
   if (session.messageCount > 1) {
-    // If we asked for name and didn't extract one, accept raw message as name
-    if (session.askedForName && !session.name && rawMessage.trim().length > 0) {
-      // Only accept if it looks like a name response (short, not an address)
-      const trimmed = rawMessage.trim();
-      if (trimmed.length < 50 && !looksLikeAddress(trimmed)) {
+    const trimmed = rawMessage.trim();
+    if (trimmed.length === 0) return;
+
+    // Asked for name, extraction didn't find one, short non-address response → accept as name
+    if (session.askedFields.has("name") && !session.name && extraction.nameSource === "default") {
+      if (trimmed.length < 50 && !looksLikeAddress(trimmed) && !looksLikeIssue(trimmed)) {
         session.name = trimmed;
-        console.log(`[sms-session] UPDATE phone=*${session.phoneNumber.slice(-4)} field=name value=${trimmed} (accepted as-is)`);
+        console.log(`[sms-session] ACCEPT_RAW phone=*${phoneLast4} field=name value="${trimmed}"`);
       }
     }
 
-    // If we asked for address and didn't extract one, accept raw message as address
-    if (session.askedForAddress && !session.address && rawMessage.trim().length > 0) {
-      session.address = rawMessage.trim();
-      console.log(`[sms-session] UPDATE phone=*${session.phoneNumber.slice(-4)} field=address value=${rawMessage.trim()} (accepted as-is)`);
+    // Asked for address, extraction didn't find one → accept if it has some structure
+    if (session.askedFields.has("address") && !session.address && extraction.addressSource === "default") {
+      if (trimmed.length >= 3 && trimmed.length < 100) {
+        session.address = trimmed;
+        console.log(`[sms-session] ACCEPT_RAW phone=*${phoneLast4} field=address value="${trimmed}"`);
+      }
+    }
+
+    // Asked for issue, nothing detected → accept any substantive text as issue
+    if (session.askedFields.has("issue") && !session.issue) {
+      if (trimmed.length >= 5) {
+        session.issue = trimmed;
+        console.log(`[sms-session] ACCEPT_RAW phone=*${phoneLast4} field=issue value="${trimmed.substring(0, 60)}..."`);
+      }
     }
   }
 }
 
 /**
- * Determine the next action based on session state
+ * Determine the next action based on session state.
+ *
+ * Ask priority (most natural for texting):
+ *   1. issue (people text about problems first)
+ *   2. address (tied to the issue)
+ *   3. name (least natural to volunteer)
+ *
+ * Only asks for ONE field at a time.
+ * Never repeats a question already asked.
+ * Completes ONLY when all three fields are present.
  */
-function determineNextAction(session: SmsSession): SmsFlowResult {
+function determineNextAction(
+  session: SmsSession,
+  rawMessage: string,
+  extraction: SmsExtractionResult,
+): SmsFlowResult {
   const hasName = !!session.name;
   const hasAddress = !!session.address;
   const hasIssue = !!session.issue;
 
-  // All fields present -> COMPLETE
+  // All fields present → COMPLETE
   if (hasName && hasAddress && hasIssue) {
+    session.completed = true;
     return { action: "complete", session, reason: "all_fields" };
   }
 
-  // Missing name, haven't asked yet -> ASK
-  if (!hasName && !session.askedForName) {
-    session.askedForName = true;
-    return { action: "ask_followup", message: FOLLOW_UP_NAME, session };
+  // Build prefix acknowledgement based on what was just captured
+  const justCapturedFields: string[] = [];
+  if (extraction.nameSource !== "default") justCapturedFields.push("name");
+  if (extraction.addressSource !== "default") justCapturedFields.push("address");
+  if (session.issue && session.messageCount === 1) justCapturedFields.push("issue");
+
+  // Check if a field was overwritten (correction)
+  const wasCorrection = rawMessage.toLowerCase().includes("wrong") ||
+    rawMessage.toLowerCase().includes("actually") ||
+    rawMessage.toLowerCase().includes("correction") ||
+    rawMessage.toLowerCase().includes("update");
+
+  let prefix = "";
+  if (wasCorrection) {
+    prefix = "Updated. ";
+  } else if (justCapturedFields.length > 0 && session.messageCount > 1) {
+    prefix = "Got it. ";
   }
 
-  // Missing address, haven't asked yet -> ASK
-  if (!hasAddress && !session.askedForAddress) {
-    session.askedForAddress = true;
-    return { action: "ask_followup", message: FOLLOW_UP_ADDRESS, session };
+  // Ask for missing fields in priority order: issue → address → name
+  if (!hasIssue && !session.askedFields.has("issue")) {
+    session.askedFields.add("issue");
+    return { action: "ask_followup", message: prefix + FOLLOW_UP_ISSUE, session };
   }
 
-  // All follow-ups exhausted -> COMPLETE with defaults
-  return { action: "complete", session, reason: "followups_exhausted" };
+  if (!hasAddress && !session.askedFields.has("address")) {
+    session.askedFields.add("address");
+    return { action: "ask_followup", message: prefix + FOLLOW_UP_ADDRESS, session };
+  }
+
+  if (!hasName && !session.askedFields.has("name")) {
+    session.askedFields.add("name");
+    return { action: "ask_followup", message: prefix + FOLLOW_UP_NAME, session };
+  }
+
+  // We've asked for all missing fields at least once.
+  // If a field is STILL missing, ask again (one more chance).
+  // This handles: user ignored the question and sent something else.
+  if (!hasIssue) {
+    return { action: "ask_followup", message: prefix + FOLLOW_UP_ISSUE, session };
+  }
+  if (!hasAddress) {
+    return { action: "ask_followup", message: prefix + FOLLOW_UP_ADDRESS, session };
+  }
+  if (!hasName) {
+    return { action: "ask_followup", message: prefix + FOLLOW_UP_NAME, session };
+  }
+
+  // Shouldn't reach here (all fields check above), but safety net
+  session.completed = true;
+  return { action: "complete", session, reason: "all_fields" };
 }
 
 /**
  * Simple heuristic to check if text looks like an address
  */
 function looksLikeAddress(text: string): boolean {
-  const streetTypes = /\b(street|st|avenue|ave|drive|dr|road|rd|boulevard|blvd|lane|ln|way|court|ct|place|pl|circle|cir)\b/i;
+  const streetTypes = /\b(street|st|avenue|ave|drive|dr|road|rd|boulevard|blvd|lane|ln|way|court|ct|place|pl|circle|cir|calle|avenida)\b/i;
   const hasNumber = /^\d+\s+/.test(text);
   return streetTypes.test(text) || hasNumber;
 }
@@ -308,8 +468,8 @@ function looksLikeAddress(text: string): boolean {
 // ============================================================
 
 /**
- * Get finalized session data for record creation
- * Applies defaults for any missing fields
+ * Get finalized session data for record creation.
+ * Applies defaults for any missing fields.
  */
 export function getFinalizedSessionData(session: SmsSession): {
   name: string;
@@ -459,10 +619,10 @@ export function getAllActiveSessions(): SmsSessionDebugInfo[] {
       hasName: !!session.name,
       hasAddress: !!session.address,
       hasIssue: !!session.issue,
-      askedForName: session.askedForName,
-      askedForAddress: session.askedForAddress,
+      askedFields: Array.from(session.askedFields),
       messageCount: session.messageCount,
       ageMs: now - session.lastActivityAt.getTime(),
+      completed: session.completed,
     });
   });
 
@@ -491,10 +651,10 @@ export function getSessionDebugInfo(phoneNumber: string): SmsSessionDebugInfo | 
     hasName: !!session.name,
     hasAddress: !!session.address,
     hasIssue: !!session.issue,
-    askedForName: session.askedForName,
-    askedForAddress: session.askedForAddress,
+    askedFields: Array.from(session.askedFields),
     messageCount: session.messageCount,
     ageMs: now - session.lastActivityAt.getTime(),
+    completed: session.completed,
   };
 }
 

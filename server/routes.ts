@@ -847,9 +847,9 @@ export async function registerRoutes(
       hasName: boolean;
       hasAddress: boolean;
       hasIssue: boolean;
-      askedForName: boolean;
-      askedForAddress: boolean;
+      askedFields: string[];
       messageCount: number;
+      completed: boolean;
       action: string;
     };
   } | null = null;
@@ -1137,9 +1137,9 @@ export async function registerRoutes(
             hasName: !!flowResult.session.name,
             hasAddress: !!flowResult.session.address,
             hasIssue: !!flowResult.session.issue,
-            askedForName: flowResult.session.askedForName,
-            askedForAddress: flowResult.session.askedForAddress,
+            askedFields: Array.from(flowResult.session.askedFields),
             messageCount: flowResult.session.messageCount,
+            completed: flowResult.session.completed,
             action: flowResult.action,
           };
         }
@@ -1192,6 +1192,13 @@ export async function registerRoutes(
               );
               return returnTwiml(responseMessage);
             }
+          }
+
+          case "cancelled": {
+            console.log(`[TWILIO-GUIDED] CANCELLED phone=*${fromNumber.slice(-4)}`);
+            processedMessageSids.add(messageSid);
+            deleteSession(fromNumber);
+            return returnTwiml("Your report has been cancelled. Text again anytime to start a new one.");
           }
         }
       }
