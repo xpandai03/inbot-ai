@@ -657,6 +657,86 @@ function detectAllStrongIntents(text: string): Set<string> {
   return matched;
 }
 
+// ============================================================
+// SMS-SPECIFIC INTENT OVERRIDES (Channel-Aware Classification)
+// ============================================================
+// SMS issues are short literal text — keyword-first, no inference.
+// These overrides run AFTER LLM/regex and correct misclassifications
+// that stem from Voice-optimized semantic matching.
+// Voice classification is NOT affected.
+// ============================================================
+
+// Tree/debris patterns — MUST NOT route to Pothole / Road Damage
+const SMS_TREE_DEBRIS_PATTERNS: RegExp[] = [
+  /tree\s*(fell|down|fallen|blocking|block)/i,
+  /fallen\s*tree/i,
+  /tree\s*on\s*(my\s*)?(car|house|roof|vehicle|yard|fence|property)/i,
+  /branch\s*(fell|down|fallen|blocking|broke|snapped)/i,
+  /fallen\s*branch/i,
+  /limb\s*(fell|down|fallen|broke)/i,
+  /debris\s*(on|in|blocking)\s*(the\s*)?(road|street|sidewalk)/i,
+  /tree\s*(removal|remov)/i,
+  // Spanish
+  /[aá]rbol\s*(ca[ií]do|cayó|bloqueando|sobre)/i,
+  /rama\s*(ca[ií]da|cayó|rota)/i,
+];
+
+// Explicit pothole keywords — the ONLY triggers for "Pothole / Road Damage" on SMS
+const SMS_POTHOLE_EXPLICIT: RegExp[] = [
+  /pothole/i,
+  /pot\s*hole/i,
+  /hole\s*(in|on)\s*(the\s*)?(road|street|pavement)/i,
+  /road\s*damage/i,
+  /street\s*damage/i,
+  /crater/i,
+  /sinkhole/i,
+  /bache/i, // Spanish: pothole
+  /hoyo\s*(en\s*)?(la\s*)?(calle|carretera)/i,
+];
+
+/**
+ * Apply SMS-specific intent overrides.
+ * Rules:
+ *   1. Tree/debris → "General Inquiry" / "Public Works" (never pothole)
+ *   2. "Pothole / Road Damage" only if explicit pothole keywords present
+ */
+function applySmsIntentOverrides(rawText: string, result: ClassificationOutput): ClassificationOutput {
+  const text = rawText.toLowerCase();
+
+  // Rule 1: Tree/debris override — highest priority for SMS
+  const isTreeDebris = SMS_TREE_DEBRIS_PATTERNS.some(p => p.test(text));
+  if (isTreeDebris) {
+    if (result.intent === "Pothole / Road Damage") {
+      console.log(`[classifier] SMS OVERRIDE: tree/debris detected — "${result.intent}" → "General Inquiry" / "Public Works"`);
+      return {
+        ...result,
+        intent: "General Inquiry",
+        department: "Public Works",
+      };
+    }
+    // Even if LLM got a different intent, ensure department is Public Works for tree issues
+    if (result.department !== "Public Works") {
+      console.log(`[classifier] SMS OVERRIDE: tree/debris detected — dept "${result.department}" → "Public Works"`);
+      return { ...result, department: "Public Works" };
+    }
+  }
+
+  // Rule 2: Narrow pothole — only allow if explicit pothole keywords present
+  if (result.intent === "Pothole / Road Damage") {
+    const hasExplicitPothole = SMS_POTHOLE_EXPLICIT.some(p => p.test(text));
+    if (!hasExplicitPothole) {
+      console.log(`[classifier] SMS OVERRIDE: "${result.intent}" without explicit pothole keyword → "General Inquiry" / "Public Works"`);
+      return {
+        ...result,
+        intent: "General Inquiry",
+        department: "Public Works",
+      };
+    }
+  }
+
+  return result;
+}
+
 /**
  * Main classification function
  *
@@ -664,6 +744,8 @@ function detectAllStrongIntents(text: string): Set<string> {
  * Phase 1 Final Hardening: If LLM returns "General Inquiry" but strong
  * keywords are present, override with the specific intent.
  * Timeout: 3 seconds for LLM call.
+ *
+ * SMS channel: applies strict keyword overrides after classification.
  */
 export async function classifyIntake(input: ClassificationInput): Promise<ClassificationOutput> {
   console.log("[classifier] Classifying intake:", { channel: input.channel, textLength: input.rawText.length });
@@ -698,12 +780,17 @@ export async function classifyIntake(input: ClassificationInput): Promise<Classi
       // Phase 1 Final Hardening: Override "General Inquiry" if strong keywords present
       if (llmResult.intent === "General Inquiry" && strongIntent) {
         console.log(`[classifier] OVERRIDE: LLM returned "General Inquiry" but strong keyword found → ${strongIntent.intent}`);
-        return {
+        let result: ClassificationOutput = {
           intent: strongIntent.intent,
           department: strongIntent.department,
           summary: llmResult.summary,
           method: "llm",
         };
+        // SMS channel: apply strict keyword overrides
+        if (input.channel === "SMS") {
+          result = applySmsIntentOverrides(input.rawText, result);
+        }
+        return result;
       }
 
       // Phase 4 Hardening: Override when LLM returns a DIFFERENT specific intent
@@ -717,17 +804,26 @@ export async function classifyIntake(input: ClassificationInput): Promise<Classi
 
         if (!llmIntentAlsoMatched) {
           console.log(`[classifier] OVERRIDE: LLM returned "${llmResult.intent}" but only "${strongIntent.intent}" keywords present (no competing "${llmResult.intent}" keywords) → ${strongIntent.intent}`);
-          return {
+          let result: ClassificationOutput = {
             intent: strongIntent.intent,
             department: strongIntent.department,
             summary: llmResult.summary,
             method: "llm",
           };
+          // SMS channel: apply strict keyword overrides
+          if (input.channel === "SMS") {
+            result = applySmsIntentOverrides(input.rawText, result);
+          }
+          return result;
         } else {
           console.log(`[classifier] NO OVERRIDE: Both "${strongIntent.intent}" and "${llmResult.intent}" keywords present — trusting LLM decision`);
         }
       }
 
+      // SMS channel: apply strict keyword overrides to LLM result
+      if (input.channel === "SMS") {
+        return applySmsIntentOverrides(input.rawText, llmResult);
+      }
       return llmResult;
     }
 
@@ -742,12 +838,17 @@ export async function classifyIntake(input: ClassificationInput): Promise<Classi
   // Phase 1 Final Hardening: Override regex "General Inquiry" if strong keywords present
   if (regexResult.intent === "General Inquiry" && strongIntent) {
     console.log(`[classifier] OVERRIDE: Regex returned "General Inquiry" but strong keyword found → ${strongIntent.intent}`);
-    return {
+    let result: ClassificationOutput = {
       intent: strongIntent.intent,
       department: strongIntent.department,
       summary: regexResult.summary,
       method: "regex",
     };
+    // SMS channel: apply strict keyword overrides
+    if (input.channel === "SMS") {
+      result = applySmsIntentOverrides(input.rawText, result);
+    }
+    return result;
   }
 
   // Phase 4 Hardening: Same competing-intent override for regex path
@@ -755,14 +856,23 @@ export async function classifyIntake(input: ClassificationInput): Promise<Classi
     const allMatched = detectAllStrongIntents(input.rawText);
     if (!allMatched.has(regexResult.intent)) {
       console.log(`[classifier] OVERRIDE: Regex returned "${regexResult.intent}" but only "${strongIntent.intent}" keywords present → ${strongIntent.intent}`);
-      return {
+      let result: ClassificationOutput = {
         intent: strongIntent.intent,
         department: strongIntent.department,
         summary: regexResult.summary,
         method: "regex",
       };
+      // SMS channel: apply strict keyword overrides
+      if (input.channel === "SMS") {
+        result = applySmsIntentOverrides(input.rawText, result);
+      }
+      return result;
     }
   }
 
+  // SMS channel: apply strict keyword overrides to regex result
+  if (input.channel === "SMS") {
+    return applySmsIntentOverrides(input.rawText, regexResult);
+  }
   return regexResult;
 }
