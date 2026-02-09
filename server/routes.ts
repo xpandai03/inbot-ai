@@ -11,7 +11,6 @@ import {
   isEndOfCallReport,
   transformVapiToIntakeRecord,
   getCallId,
-  extractSmsFields,
   extractCallMetadata,
   type VapiWebhookPayload,
   type VapiCallMetadata,
@@ -31,6 +30,7 @@ import {
   processSmsWithSession,
   deleteSession,
   getFinalizedSessionData,
+  isSessionComplete,
   getThankYouMessage,
   startCleanupTimer,
   getAllActiveSessions,
@@ -106,10 +106,24 @@ async function triggerDepartmentEmail(
   }
 }
 
+const SERVER_START_TIME = new Date().toISOString();
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
+
+  // ============================================================
+  // VERSION ENDPOINT — unambiguous proof of deployed code
+  // ============================================================
+  app.get("/api/version", (_req, res) => {
+    res.json({
+      commit: process.env.RAILWAY_GIT_COMMIT_SHA || "local-dev",
+      startTime: SERVER_START_TIME,
+      nodeEnv: process.env.NODE_ENV || "unknown",
+      uptimeSeconds: Math.round(process.uptime()),
+    });
+  });
 
   // Debug endpoint - verify system state (remove after debugging)
   app.get("/debug/status", async (_req, res) => {
@@ -868,6 +882,12 @@ export async function registerRoutes(
     messageSid: string,
     reason: string
   ): Promise<{ recordId: string; responseMessage: string }> {
+    // HARD GUARD: Never create a record without all 3 fields (except timeout/abandoned)
+    if (reason !== "timeout" && !isSessionComplete(session)) {
+      console.error(`[TWILIO-GUIDED] HARD GUARD BLOCKED record creation: reason=${reason} name=${!!session.name} addr=${!!session.address} issue=${!!session.issue}`);
+      throw new Error("HARD GUARD: Cannot create record without name, address, and issue");
+    }
+
     const { name, address, issue } = getFinalizedSessionData(session);
 
     console.log(`[TWILIO-GUIDED] CREATE_RECORD reason=${reason} phone=*${fromNumber.slice(-4)}`);
@@ -894,8 +914,12 @@ export async function registerRoutes(
       throw new Error(`Validation failed: ${JSON.stringify(validation.error.issues)}`);
     }
 
+    // Store full conversation history as rawTranscript (not just last message)
+    const fullTranscript = session.messageHistory
+      .map((msg, i) => `[Message ${i + 1}] ${msg}`)
+      .join("\n");
     const newRecord = await storage.createRecord(validation.data, {
-      rawTranscript: issue,
+      rawTranscript: fullTranscript || issue,
     });
     console.log(`[TWILIO-GUIDED] COMPLETE phone=*${fromNumber.slice(-4)} recordId=${newRecord.id}`);
 
@@ -910,7 +934,7 @@ export async function registerRoutes(
       try {
         console.log("[TWILIO-GUIDED] Background: Starting classification...");
         const classification = await classifyIntake({
-          rawText: issue,
+          rawText: fullTranscript || issue,
           channel: "SMS",
           clientId: "client_demo",
         });
@@ -998,8 +1022,12 @@ export async function registerRoutes(
         return;
       }
 
+      // Store full conversation history as rawTranscript
+      const fullTranscript = session.messageHistory
+        .map((msg, i) => `[Message ${i + 1}] ${msg}`)
+        .join("\n");
       const newRecord = await storage.createRecord(validation.data, {
-        rawTranscript: issue,
+        rawTranscript: fullTranscript || issue,
       });
       console.log(`[TWILIO-GUIDED] TIMEOUT_RECORD_CREATED phone=*${session.phoneNumber.slice(-4)} recordId=${newRecord.id}`);
 
@@ -1055,11 +1083,9 @@ export async function registerRoutes(
     }
   }
 
-  // Start cleanup timer for session timeouts (if guided mode enabled)
-  if (isGuidedSmsEnabled()) {
-    console.log("[routes] Starting SMS session cleanup timer (guided mode enabled)");
-    startCleanupTimer(handleSessionTimeout);
-  }
+  // Start cleanup timer for session timeouts (always active — session flow is the only path)
+  console.log("[routes] Starting SMS session cleanup timer");
+  startCleanupTimer(handleSessionTimeout);
 
   // BULLETPROOF Twilio SMS webhook - ALWAYS returns 200/TwiML
   app.post("/webhook/twilio", async (req, res) => {
@@ -1124,11 +1150,10 @@ export async function registerRoutes(
       }
 
       // ============================================================
-      // GUIDED SMS INTAKE (when feature flag enabled)
+      // SMS INTAKE — always uses session flow (no legacy bypass)
       // ============================================================
-      if (isGuidedSmsEnabled()) {
-        console.log("[TWILIO-GUIDED] Processing with guided flow...");
-
+      console.log(`[SMS] path=session phone=*${fromNumber.slice(-4)}`);
+      {
         const flowResult = await processSmsWithSession(fromNumber, messageBody || "");
 
         // Update debug payload with session state
@@ -1153,6 +1178,16 @@ export async function registerRoutes(
           }
 
           case "complete": {
+            // HARD GUARD: Double-check all 3 fields before creating record
+            if (!isSessionComplete(flowResult.session)) {
+              console.error(`[TWILIO-GUIDED] HARD GUARD: "complete" returned but fields missing — name=${!!flowResult.session.name} addr=${!!flowResult.session.address} issue=${!!flowResult.session.issue}`);
+              // Ask for the next missing field instead of creating an incomplete record
+              const missing = !flowResult.session.issue ? "What issue would you like to report?"
+                : !flowResult.session.address ? "What's the street address where this is happening?"
+                : "Could you share your full name for our records?";
+              processedMessageSids.add(messageSid);
+              return returnTwiml(missing);
+            }
             const { recordId, responseMessage } = await createRecordAndClassify(
               flowResult.session,
               fromNumber,
@@ -1202,131 +1237,9 @@ export async function registerRoutes(
           }
         }
       }
-
-      // ============================================================
-      // LEGACY SINGLE-PASS SMS INTAKE (when feature flag disabled)
-      // ============================================================
-      console.log("[TWILIO] Legacy single-pass flow");
-
-      const extractionResult = await extractSmsFields(messageBody || "");
-      console.log("[TWILIO] Extraction result - name:", extractionResult.name, "| source:", extractionResult.nameSource);
-      console.log("[TWILIO] Extraction result - address:", extractionResult.address, "| source:", extractionResult.addressSource);
-      console.log("[TWILIO] Extraction completeness:", extractionResult.completeness, "| addressIsComplete:", extractionResult.addressIsComplete);
-
-      // Update debug payload with extraction results
-      if (lastTwilioPayload) {
-        lastTwilioPayload.extraction = {
-          name: extractionResult.name,
-          address: extractionResult.address,
-          nameSource: extractionResult.nameSource,
-          addressSource: extractionResult.addressSource,
-          completeness: extractionResult.completeness,
-          addressIsComplete: extractionResult.addressIsComplete,
-        };
-      }
-
-      // INSERT FIRST with pending classification
-      const pendingRecord = {
-        name: extractionResult.name,
-        phone: formatPhoneNumber(fromNumber),
-        address: extractionResult.address,
-        intent: "Pending",
-        department: "Pending",
-        channel: "SMS" as const,
-        language: "English",
-        durationSeconds: 0,
-        cost: 0.0075,
-        timestamp: new Date().toISOString(),
-        transcriptSummary: messageBody?.substring(0, 200) || "Processing...",
-        clientId: "client_demo",
-      };
-
-      // Validate
-      const validation = insertIntakeRecordSchema.safeParse(pendingRecord);
-      if (!validation.success) {
-        console.error("[TWILIO] Validation failed:", JSON.stringify(validation.error.issues));
-        errorMsg = `Validation failed: ${JSON.stringify(validation.error.issues)}`;
-        lastTwilioPayload.error = errorMsg;
-        // Still return 200 TwiML
-        return returnTwiml("Thank you for your message.");
-      }
-
-      // INSERT into database
-      console.log("[TWILIO] INSERT ATTEMPTED - calling storage.createRecord...");
-      const newRecord = await storage.createRecord(validation.data, {
-        rawTranscript: messageBody || undefined,
-      });
-      console.log(`[TWILIO] INSERT SUCCEEDED - ID: ${newRecord.id}`);
-
-      // IDEMPOTENCY: Mark as processed ONLY AFTER successful insert
-      processedMessageSids.add(messageSid);
-      console.log(`[TWILIO] DEDUP MARKED - MessageSid ${messageSid} added to processed set`);
-
-      // Cleanup old MessageSids (keep last 1000)
-      if (processedMessageSids.size > 1000) {
-        const firstSid = processedMessageSids.values().next().value;
-        if (firstSid) processedMessageSids.delete(firstSid);
-      }
-
-      // Return TwiML immediately with reference ID
-      returnTwiml(`Thank you for your report. Reference #${newRecord.id.substring(0, 8)}. A representative will follow up.`);
-
-      // Background: classify and update (fire-and-forget)
-      setImmediate(async () => {
-        try {
-          console.log("[TWILIO] Background: Starting classification...");
-          const classification = await classifyIntake({
-            rawText: messageBody || "",
-            channel: "SMS",
-            clientId: "client_demo",
-          });
-          console.log("[TWILIO] Background: Classification result:", classification.intent, classification.department);
-
-          await storage.updateRecord(newRecord.id, {
-            intent: classification.intent,
-            department: classification.department,
-            transcriptSummary: classification.summary,
-          });
-          console.log("[TWILIO] Background: Record updated with classification");
-
-          // Log initial evaluation
-          try {
-            await storage.createEvaluationEntry({
-              interactionId: newRecord.id,
-              evaluationType: "initial",
-              candidateName: extractionResult.name,
-              candidateAddress: extractionResult.address,
-              candidateIntent: classification.intent,
-              candidateDepartment: classification.department,
-              candidateSummary: classification.summary,
-              extractionMeta: {
-                classifierMethod: classification.method,
-                channel: "SMS",
-                nameSource: extractionResult.nameSource,
-                addressSource: extractionResult.addressSource,
-                completeness: extractionResult.completeness,
-                addressIsComplete: extractionResult.addressIsComplete,
-              },
-              status: "applied",
-              appliedAt: new Date().toISOString(),
-              appliedBy: "system",
-            });
-          } catch (evalErr) {
-            console.error("[TWILIO] Background: Failed to log initial evaluation:", evalErr);
-          }
-
-          triggerDepartmentEmail({
-            ...newRecord,
-            intent: classification.intent,
-            department: classification.department,
-            transcriptSummary: classification.summary,
-          }).catch((e) => console.error("[TWILIO] Background: Email failed:", e));
-        } catch (bgError) {
-          console.error("[TWILIO] Background: Classification failed:", bgError);
-        }
-      });
-
-      return;
+      // Session flow handled all paths above — should not reach here
+      console.error(`[SMS] UNREACHABLE: flowResult.action not handled`);
+      return returnTwiml("Thank you for your message.");
     } catch (outerError) {
       // CATCH-ALL: Log everything, still return 200 TwiML
       console.error("[TWILIO] === OUTER ERROR ===");

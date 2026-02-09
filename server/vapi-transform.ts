@@ -3054,7 +3054,22 @@ export async function extractSmsFields(smsBody: string): Promise<SmsExtractionRe
     }
   }
 
-  // Step 3: Compute completeness
+  // Step 3: Cross-validate — reject name if it's a token from the address
+  // Prevents "Fantastic" from "3344 Fantastic Street" being set as name
+  if (nameSource !== "default" && addressSource !== "default") {
+    const nameLower = name.toLowerCase();
+    const addrLower = address.toLowerCase();
+    // Check if name (or any word of it) appears inside the address
+    const nameWords = nameLower.split(/\s+/);
+    const addressContainsName = nameWords.every(w => addrLower.includes(w));
+    if (addressContainsName) {
+      console.log(`[sms-extract] REJECT name="${name}" — it is a substring of address="${address}"`);
+      name = "Unknown (SMS)";
+      nameSource = "default";
+    }
+  }
+
+  // Step 4: Compute completeness
   const addressComplete = isAddressComplete(address);
   const completeness = determineCompleteness(nameSource, addressSource, addressComplete);
 

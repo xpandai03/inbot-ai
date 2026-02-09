@@ -230,7 +230,9 @@ function detectIssue(rawMessage: string, extraction: SmsExtractionResult): strin
  * Heuristic: does the text look like it describes a problem/issue?
  */
 function looksLikeIssue(text: string): boolean {
-  const issuePatterns = /\b(report|pothole|leak|flood|broken|damage|trash|garbage|graffiti|noise|homeless|abandoned|fire|smoke|sewer|drain|water|light|pole|cable|hanging|down|out|blocked|clogged|someone|person|backyard|front\s*yard|sidewalk|street|road|park|alley|problem|issue|complaint|hazard|danger|emergency|smell|odor|animal|dog|cat|rat|mice|roach|bed\s*bug|mold|code\s*violation|illegal|dumping|construction|tree|branch|fallen|overgrown|weed|sign|signal|crosswalk|speed|loud|music|party|fight|suspicious|vehicle|car|parking|tow|abandon|vacant|boarded)\b/i;
+  // NOTE: "street", "road", "park", "alley" removed — they are address components
+  // that cause false positives (e.g. "3344 Fantastic Street" detected as issue)
+  const issuePatterns = /\b(report|pothole|leak|flood|broken|damage|trash|garbage|graffiti|noise|homeless|abandoned|fire|smoke|sewer|drain|water|light|pole|cable|hanging|down|out|blocked|clogged|someone|person|backyard|front\s*yard|sidewalk|problem|issue|complaint|hazard|danger|emergency|smell|odor|animal|dog|cat|rat|mice|roach|bed\s*bug|mold|code\s*violation|illegal|dumping|construction|tree|branch|fallen|overgrown|weed|sign|signal|crosswalk|speed|loud|music|party|fight|suspicious|vehicle|car|parking|tow|abandon|vacant|boarded)\b/i;
   // Spanish issue keywords
   const spanishIssuePatterns = /\b(reportar|bache|fuga|inundaci[oó]n|roto|basura|grafiti|ruido|incendio|humo|drenaje|agua|luz|poste|cable|colgando|ca[ií]do|bloqueado|alguien|persona|problema|queja|peligro|emergencia|olor|animal|perro|gato|rata|cucaracha|moho|violaci[oó]n|ilegal|construcci[oó]n|[aá]rbol|rama|maleza|se[nñ]al)\b/i;
 
@@ -277,10 +279,15 @@ export async function processSmsWithSession(
 
   console.log(`[sms-session] PROCESS phone=*${phoneNumber.slice(-4)} msgNum=${session.messageCount}`);
 
-  // Check max messages
+  // Check max messages — but NEVER complete without all 3 fields
   if (session.messageCount > MAX_MESSAGES_PER_SESSION) {
-    console.log(`[sms-session] MAX_MESSAGES phone=*${phoneNumber.slice(-4)}`);
-    return { action: "complete", session, reason: "max_messages" };
+    const hasAll = !!session.name && !!session.address && !!session.issue;
+    if (hasAll) {
+      console.log(`[sms-session] MAX_MESSAGES phone=*${phoneNumber.slice(-4)} — all fields present, completing`);
+      return { action: "complete", session, reason: "max_messages" };
+    }
+    console.log(`[sms-session] MAX_MESSAGES phone=*${phoneNumber.slice(-4)} — fields missing (name=${!!session.name} addr=${!!session.address} issue=${!!session.issue}), continuing`);
+    // Fall through to extraction + ask for missing field
   }
 
   // Extract fields from current message
@@ -468,8 +475,18 @@ function looksLikeAddress(text: string): boolean {
 // ============================================================
 
 /**
+ * HARD GUARD: Check if session has all 3 required fields.
+ * Must be called before record creation.
+ */
+export function isSessionComplete(session: SmsSession): boolean {
+  return !!session.name && !!session.address && !!session.issue;
+}
+
+/**
  * Get finalized session data for record creation.
  * Applies defaults for any missing fields.
+ * IMPORTANT: Only call this AFTER verifying isSessionComplete() for normal completion.
+ * Timeout/abandoned sessions may call this with missing fields — that's expected.
  */
 export function getFinalizedSessionData(session: SmsSession): {
   name: string;
