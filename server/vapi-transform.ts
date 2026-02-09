@@ -908,6 +908,13 @@ interface NameCandidate {
 // Explicit triggers should MASSIVELY outweigh weak patterns
 // Phase 2 Hardening: Added casual introduction patterns for natural speech
 const PATTERN_BASE_SCORES: Record<string, number> = {
+  // ============================================================
+  // BOT CONFIRMATION PATTERNS (HIGHEST confidence — RULE 1: authoritative)
+  // ============================================================
+  "bot your name is": 700,    // "Your full name is X" / "Your name is X"
+  "bot got it name": 650,     // "Got it, X" / "Got it. Your name is X"
+  "bot thank you name": 600,  // "Thank you X" when confirming
+  "bot name confirmation": 550, // Generic bot name restatement
   // Explicit name triggers (VERY HIGH confidence - should always win)
   "my name is": 500,   // Increased from 100 - definitive name statement
   "mi nombre es": 500, // Spanish equivalent - same confidence
@@ -950,6 +957,37 @@ function extractAllNameCandidates(text: string, messageIndex: number): NameCandi
   if (!text) return [];
 
   const candidates: NameCandidate[] = [];
+
+  // Pattern 0: Bot confirmation phrases (HIGHEST confidence — RULE 1: authoritative)
+  // These match when bots confirm the caller's name back to them
+  const botConfirmationPatterns = [
+    // "Your full name is Rambo Star" / "Your name is Rambo Star"
+    { regex: new RegExp(`(?:your\\s+(?:full\\s+)?name\\s+is)\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "gi"), pattern: "bot your name is" },
+    // "Got it, Rambo Star" / "Got it. Your name is Rambo Star"
+    { regex: new RegExp(`(?:got\\s+it[.,]?\\s+)(?:your\\s+(?:full\\s+)?name\\s+is\\s+)?(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "gi"), pattern: "bot got it name" },
+    // "Thank you Rambo Star" / "Thanks, Rambo Star"
+    { regex: new RegExp(`(?:thank\\s+you|thanks),?\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "gi"), pattern: "bot thank you name" },
+    // "So your name is X" / "I have your name as X"
+    { regex: new RegExp(`(?:so\\s+your\\s+name\\s+is|i\\s+have\\s+your\\s+name\\s+as)\\s+(${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN}){0,2})`, "gi"), pattern: "bot name confirmation" },
+  ];
+
+  for (const { regex, pattern } of botConfirmationPatterns) {
+    const matches = Array.from(text.matchAll(regex));
+    for (const match of matches) {
+      if (match[1]) {
+        const rawMatch = match[1];
+        const cleaned = rawMatch.replace(/[.,!?]$/, "").trim();
+        const words = cleaned.split(/\s+/).filter(isValidNameWord);
+
+        if (words.length >= 1 && words.length <= 5) {
+          const value = words.join(" ");
+          let score = PATTERN_BASE_SCORES[pattern] || 600;
+          score += calculateNameScoreAdjustments(value, cleaned, text, match.index || 0);
+          candidates.push({ value, pattern, score, messageIndex, rawMatch: cleaned });
+        }
+      }
+    }
+  }
 
   // Pattern 1: Explicit name phrases (highest confidence)
   const explicitPatterns = [
@@ -1313,8 +1351,10 @@ export function extractName(
 
   console.log(`[extractName] Total candidates from user messages: ${allCandidates.length}`);
 
-  // Source A2: bot messages (Phase 3 Hardening)
-  // Assistant confirmations like "Got it, Tony Stark" contain clean name mentions
+  // Source A2: bot messages (RULE 1: bot confirmations are AUTHORITATIVE)
+  // When bot says "Your full name is Rambo Star" — that is the highest-trust name source.
+  // Bot-confirmation patterns (pattern starts with "bot ") get a large BONUS.
+  // Other bot-sourced patterns get a small penalty (they may echo the user).
   const botMessages = messages.filter(m => m.role === "bot");
   if (botMessages.length > 0) {
     console.log(`[extractName] Scanning ${botMessages.length} bot messages for name confirmations:`);
@@ -1322,13 +1362,23 @@ export function extractName(
       const preview = msg.message.substring(0, 100);
       console.log(`[extractName]   bot-msg[${idx}]: "${preview}${msg.message.length > 100 ? '...' : ''}"`);
       const candidates = extractAllNameCandidates(msg.message, 800 + idx);
-      // De-duplicate against existing candidates, slightly lower priority
       for (const c of candidates) {
-        const isDuplicate = allCandidates.some(existing =>
+        const isBotConfirmation = c.pattern.startsWith("bot ");
+        const existingMatch = allCandidates.find(existing =>
           existing.value.toLowerCase() === c.value.toLowerCase()
         );
-        if (!isDuplicate) {
-          c.score -= 10; // Slightly lower score for bot-sourced names
+        if (existingMatch) {
+          // Name already found from user messages — bot confirming it BOOSTS its score
+          if (isBotConfirmation) {
+            const boost = 200;
+            console.log(`[extractName]   → Bot confirmed "${c.value}" — boosting existing candidate by +${boost}`);
+            existingMatch.score += boost;
+          }
+        } else {
+          // New name only found in bot messages
+          if (!isBotConfirmation) {
+            c.score -= 10; // Small penalty for non-confirmation bot patterns
+          }
           allCandidates.push(c);
         }
       }
@@ -1435,6 +1485,11 @@ export function extractName(
 const STREET_TYPES_ENGLISH = "Street|St|Avenue|Ave|Drive|Dr|Road|Rd|Boulevard|Blvd|Lane|Ln|Way|Court|Ct|Place|Pl|Circle|Cir|Terrace|Ter|Trail|Trl|Parkway|Pkwy|Highway|Hwy";
 const STREET_TYPES_SPANISH = "Calle|Avenida|Av|Pasaje|Camino|Carretera|Plaza|Callejón|Paseo|Bulevar|Autopista|Vereda|Sendero";
 const STREET_TYPES = `${STREET_TYPES_ENGLISH}|${STREET_TYPES_SPANISH}`;
+// Pre-computed lowercase set of street TYPE keywords only (not street names like "main", "oak")
+// Used to detect numbered streets: "40 Street" → "40th Street"
+const STREET_TYPE_LOWER_SET = new Set(
+  `${STREET_TYPES_ENGLISH}|${STREET_TYPES_SPANISH}`.toLowerCase().split("|")
+);
 
 // Spoken number words (English and Spanish)
 // Phase 1 Spanish Hardening: Added Spanish number words
@@ -1579,6 +1634,24 @@ function parseSpokenNumber(words: string[]): number | null {
   // e.g., "treinta y cinco" → ["treinta", "cinco"] → 35
   words = words.filter(w => w.toLowerCase() !== "y");
 
+  // Helper: resolve a word to its numeric value (supports both word names AND bare digit strings)
+  const resolveWord = (w: string): number | undefined => {
+    const lower = w.toLowerCase();
+    if (WORD_TO_DIGIT[lower] !== undefined) return WORD_TO_DIGIT[lower];
+    if (TENS_WORDS[lower] !== undefined) return TENS_WORDS[lower];
+    // Bare digit strings like "3", "15", "40"
+    if (/^\d+$/.test(w)) return parseInt(w, 10);
+    return undefined;
+  };
+
+  // Strategy 0: If all tokens are bare digit strings, concatenate them directly
+  // e.g., "3 15" → "315", "3 15 40" → "31540"
+  const allBareDigits = words.every(w => /^\d+$/.test(w));
+  if (allBareDigits && words.length >= 1) {
+    const concatenated = words.join("");
+    return parseInt(concatenated, 10);
+  }
+
   // Strategy 1: Try compound number interpretation (e.g., "eleven twenty two" = 11*100 + 22 = 1122)
   // Strategy 2: Try digit-by-digit interpretation (e.g., "five four eight four" = 5484)
 
@@ -1720,22 +1793,36 @@ export function normalizeSpokenAddress(input: string): string {
     if (foundStreetWord || STREET_KEYWORDS.has(lower)) {
       foundStreetWord = true;
       restWords.push(word);
-    } else if (/^\d+$/.test(word) && i + 1 < words.length) {
-      const nextLower = words[i + 1].toLowerCase().replace(/[.,!?]/g, "");
-      if (isOrdinalWord(nextLower)) {
-        const num = parseInt(word, 10);
-        const ordVal = getOrdinalValue(nextLower);
-        if (ordVal !== null && num >= 10 && num <= 90 && num % 10 === 0) {
-          const combined = num + ordVal;
-          ordinalResult = combined + getOrdinalSuffix(combined);
-          console.log(`[normalize] Digit+ordinal: "${word} ${nextLower}" → "${ordinalResult}"`);
-          i++;
+    } else if (/^\d+$/.test(word)) {
+      // Bare digit token (e.g., "3", "15", "40")
+      // Check if this digit + next word form a compound ordinal ("20 first" → "21st")
+      if (i + 1 < words.length) {
+        const nextLower = words[i + 1].toLowerCase().replace(/[.,!?]/g, "");
+        if (isOrdinalWord(nextLower)) {
+          const num = parseInt(word, 10);
+          const ordVal = getOrdinalValue(nextLower);
+          if (ordVal !== null && num >= 10 && num <= 90 && num % 10 === 0) {
+            const combined = num + ordVal;
+            ordinalResult = combined + getOrdinalSuffix(combined);
+            console.log(`[normalize] Digit+ordinal: "${word} ${nextLower}" → "${ordinalResult}"`);
+            i++;
+            foundStreetWord = true;
+            continue;
+          }
+        }
+        // Digit directly before a street type keyword (e.g., "40 Street")
+        // This is a numbered street — convert to ordinal ("40th Street")
+        if (STREET_TYPE_LOWER_SET.has(nextLower)) {
+          const num = parseInt(word, 10);
+          ordinalResult = num + getOrdinalSuffix(num);
+          console.log(`[normalize] Digit-before-street-type: "${word} ${words[i + 1]}" → "${ordinalResult} ${words[i + 1]}"`);
           foundStreetWord = true;
           continue;
         }
       }
-      restWords.push(word);
-      foundStreetWord = true;
+      // Bare digit not followed by ordinal — treat as part of address number
+      // e.g., "3 15 fortieth Street" → collect "3", then "15" as number words
+      numberWords.push(word);
     } else if (isOrdinalWord(lower)) {
       // ============================================================
       // ORDINAL HANDLING (Phase 2 Hardening)
@@ -1862,7 +1949,24 @@ function extractAddressFromText(text: string): { address: string | null; pattern
 
   // Pattern 1: Numeric address "123 Main Street"
   // Phase 2 Hardening: Multiple patterns for different address formats
+  // Build ordinal alternation for patterns (e.g., "fortieth|thirtieth|...")
+  const ORDINAL_ALT = Object.keys(ORDINAL_WORDS).join("|");
+
   const numericPatterns = [
+    // ============================================================
+    // MULTI-DIGIT-GROUP: "3 15 fortieth Street", "3 15 40 Street"
+    // ASR often splits address numbers: "315" → "3 15" or "three fifteen"
+    // These MUST run before single-digit patterns to avoid partial matches.
+    // ============================================================
+    // digits + digits + ordinal-word + street type: "3 15 fortieth Street"
+    new RegExp(`(\\d{1,4}(?:\\s+\\d{1,4})+\\s+(?:${ORDINAL_ALT})\\s+(?:${STREET_TYPES}))`, "i"),
+    // digits + digits + digit + street type: "3 15 40 Street" (digit before type = numbered street)
+    new RegExp(`(\\d{1,4}(?:\\s+\\d{1,4})+\\s+\\d{1,4}\\s+(?:${STREET_TYPES}))`, "i"),
+    // digits + digits + ordinal-suffix + street type: "3 15 40th Street"
+    new RegExp(`(\\d{1,4}(?:\\s+\\d{1,4})+\\s+\\d{1,3}(?:st|nd|rd|th)\\s+(?:${STREET_TYPES}))`, "i"),
+    // digits + digits + street-name + street type: "3 15 Main Street"
+    new RegExp(`(\\d{1,4}(?:\\s+\\d{1,4})+\\s+[A-Za-z][A-Za-z'-]*(?:\\s+[A-Za-z][A-Za-z'-]*){0,3}\\s+(?:${STREET_TYPES}))`, "i"),
+
     // Standard: "123 Main Street", "456 Oak Avenue"
     new RegExp(`(\\d{1,6}\\s+[A-Za-z][A-Za-z'-]*(?:\\s+[A-Za-z][A-Za-z'-]*){0,4}\\s+(?:${STREET_TYPES}))`, "i"),
     // With directional: "123 North Main Street", "456 South Oak Avenue"
@@ -2204,11 +2308,10 @@ export function extractAddress(
   const tryHarder = options?.tryHarder === true;
   console.log("[extractAddress] ====== ADDRESS EXTRACTION START ======", tryHarder ? "(tryHarder)" : "");
 
-  const userMessages = messages.filter(m => m.role === "user");
-  // Phase 3 Hardening: Also scan bot messages (assistant confirmations often
-  // contain the clearest address mention, e.g. "You said 2233 Fantastic Street")
-  const allMessages = messages.filter(m => m.role === "user" || m.role === "bot");
-  console.log(`[extractAddress] Processing ${userMessages.length} user messages, ${allMessages.length} total (user+bot)`);
+  const allMsgFiltered = messages.filter(m => m.role === "user" || m.role === "bot");
+  const userCount = allMsgFiltered.filter(m => m.role === "user").length;
+  const botCount = allMsgFiltered.filter(m => m.role === "bot").length;
+  console.log(`[extractAddress] Processing ${userCount} user messages, ${botCount} bot messages, ${allMsgFiltered.length} total`);
 
   // ============================================================
   // PHASE 2 HARDENING: Two-phase extraction
@@ -2248,55 +2351,51 @@ export function extractAddress(
     return { address: validated, source: `${sourceLabel}/${result.pattern}` };
   };
 
-  // Pass A: Search USER messages for specific addresses (last-confirmed-wins)
-  // Phase 4 Hardening: Scan ALL user messages, keep the LAST specific match.
-  // Callers may correct their address mid-call ("actually it's 2706, not 2704").
+  // ============================================================
+  // RULE 1 + RULE 2: Bot confirmation is authoritative, last mention wins
+  // ============================================================
+  // Scan ALL messages (user + bot) in call order.
+  // Track last user address and last bot address separately.
+  // Priority: last bot confirmation > last user mention > transcript.
+  // ============================================================
   let lastUserAddress: { address: string; source: string } | null = null;
-  for (let i = 0; i < userMessages.length; i++) {
-    const msg = userMessages[i];
+  let lastBotAddress: { address: string; source: string } | null = null;
+
+  // Pass A+B: Process ALL messages in call order (interleaved user + bot)
+  for (let i = 0; i < allMsgFiltered.length; i++) {
+    const msg = allMsgFiltered[i];
+    const role = msg.role;
     const preview = msg.message.substring(0, 150);
-    console.log(`[extractAddress] user-msg[${i}]: "${preview}${msg.message.length > 150 ? '...' : ''}"`);
+    console.log(`[extractAddress] ${role}-msg[${i}]: "${preview}${msg.message.length > 150 ? '...' : ''}"`);
 
-    const found = tryExtract(msg.message, "user-msg");
+    const found = tryExtract(msg.message, `${role}-msg`);
     if (found) {
-      if (lastUserAddress) {
-        console.log(`[extractAddress] → Overriding previous "${lastUserAddress.address}" with "${found.address}" (last-confirmed-wins)`);
-      }
-      lastUserAddress = found;
-    }
-  }
-  if (lastUserAddress) {
-    console.log(`[extractAddress] ====== FOUND SPECIFIC ADDRESS (last-confirmed-wins): "${lastUserAddress.address}" (source: ${lastUserAddress.source}) ======`);
-    return lastUserAddress;
-  }
-  console.log("[extractAddress] No specific address in user messages");
-
-  // Pass B: Search BOT messages for specific addresses (assistant confirmations)
-  // Phase 3 Hardening: Bot turns often contain the clearest address when the
-  // system prompt confirms details ("You said 2233 Fantastic Street...")
-  const botMessages = messages.filter(m => m.role === "bot");
-  if (botMessages.length > 0) {
-    console.log(`[extractAddress] Scanning ${botMessages.length} bot messages for address confirmations...`);
-    let lastBotAddress: { address: string; source: string } | null = null;
-    for (let i = 0; i < botMessages.length; i++) {
-      const msg = botMessages[i];
-      const preview = msg.message.substring(0, 150);
-      console.log(`[extractAddress] bot-msg[${i}]: "${preview}${msg.message.length > 150 ? '...' : ''}"`);
-
-      const found = tryExtract(msg.message, "bot-msg");
-      if (found) {
+      if (role === "bot") {
         if (lastBotAddress) {
-          console.log(`[extractAddress] → Overriding previous bot "${lastBotAddress.address}" with "${found.address}" (last-confirmed-wins)`);
+          console.log(`[extractAddress] → Overriding previous bot "${lastBotAddress.address}" with "${found.address}" (last-bot-wins)`);
         }
         lastBotAddress = found;
+      } else {
+        if (lastUserAddress) {
+          console.log(`[extractAddress] → Overriding previous user "${lastUserAddress.address}" with "${found.address}" (last-user-wins)`);
+        }
+        lastUserAddress = found;
       }
     }
-    if (lastBotAddress) {
-      console.log(`[extractAddress] ====== FOUND SPECIFIC ADDRESS IN BOT CONFIRMATION (last-confirmed-wins): "${lastBotAddress.address}" (source: ${lastBotAddress.source}) ======`);
-      return lastBotAddress;
-    }
-    console.log("[extractAddress] No specific address in bot messages");
   }
+
+  // RULE 1: Bot confirmation is authoritative — prefer last bot address
+  if (lastBotAddress) {
+    console.log(`[extractAddress] ====== BOT CONFIRMED ADDRESS (RULE 1): "${lastBotAddress.address}" (source: ${lastBotAddress.source}) ======`);
+    return lastBotAddress;
+  }
+
+  // Fallback to last user address
+  if (lastUserAddress) {
+    console.log(`[extractAddress] ====== USER ADDRESS (last-mention-wins): "${lastUserAddress.address}" (source: ${lastUserAddress.source}) ======`);
+    return lastUserAddress;
+  }
+  console.log("[extractAddress] No specific address in user or bot messages");
 
   // Pass C: Try transcript for specific addresses (contains all turns interleaved)
   if (transcript) {

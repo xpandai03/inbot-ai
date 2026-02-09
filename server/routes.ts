@@ -378,6 +378,7 @@ export async function registerRoutes(
         clientId: record.clientId,
         artifactMessages: artifactMessages ?? undefined,
         currentAddress: record.address,
+        currentName: record.name,
       });
 
       // Create candidate evaluation entry
