@@ -21,6 +21,7 @@ import { EvaluationDiff } from "@/components/evaluation-diff";
 import { EvaluationHistory } from "@/components/evaluation-history";
 import type { IntakeRecordDetail, EvaluationEntry } from "@shared/schema";
 import { useState } from "react";
+import { useAuth } from "@/lib/authContext";
 
 interface DetailResponse {
   record: IntakeRecordDetail;
@@ -68,6 +69,8 @@ function formatDuration(seconds: number) {
 export default function RecordDetail() {
   const params = useParams<{ id: string }>();
   const id = params.id;
+  const { user } = useAuth();
+  const isSuperAdmin = user?.role === "super_admin";
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [transcriptOpen, setTranscriptOpen] = useState(true);
@@ -223,18 +226,22 @@ export default function RecordDetail() {
                 <span className="text-muted-foreground">Duration</span>
                 <p className="text-foreground">{formatDuration(record.durationSeconds)}</p>
               </div>
-              <div>
-                <span className="text-muted-foreground">Cost</span>
-                <p className="text-foreground">${record.cost.toFixed(2)}</p>
-              </div>
+              {isSuperAdmin && (
+                <div>
+                  <span className="text-muted-foreground">Cost</span>
+                  <p className="text-foreground">${record.cost.toFixed(2)}</p>
+                </div>
+              )}
               <div>
                 <span className="text-muted-foreground">Created</span>
                 <p className="text-foreground">{formatTimestamp(record.timestamp)}</p>
               </div>
-              <div>
-                <span className="text-muted-foreground">Client</span>
-                <p className="text-foreground">{record.clientId}</p>
-              </div>
+              {isSuperAdmin && (
+                <div>
+                  <span className="text-muted-foreground">Client</span>
+                  <p className="text-foreground">{record.clientId}</p>
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -291,98 +298,100 @@ export default function RecordDetail() {
           </Card>
         </Collapsible>
 
-        {/* Re-Evaluation */}
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm">Re-Evaluation</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {/* Re-Evaluate Button */}
-            <div>
-              {canReEvaluate ? (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => reEvaluateMutation.mutate()}
-                  disabled={reEvaluateMutation.isPending}
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 mr-1.5 ${reEvaluateMutation.isPending ? "animate-spin" : ""}`} />
-                  {reEvaluateMutation.isPending ? "Re-evaluating..." : "Re-Evaluate Record"}
-                </Button>
-              ) : (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span>
-                      <Button size="sm" variant="outline" disabled>
-                        <RefreshCw className="w-3.5 h-3.5 mr-1.5" />
-                        Re-Evaluate Record
-                      </Button>
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    <p className="text-xs">No transcript available for re-evaluation.</p>
-                  </TooltipContent>
-                </Tooltip>
-              )}
-            </div>
-
-            {/* Candidate Diff */}
-            {candidateResult && (
-              <div className="space-y-3">
-                <h4 className="text-xs font-medium text-foreground">Candidate Evaluation</h4>
-                <EvaluationDiff diff={candidateResult.diff} />
-                <div className="flex gap-2">
-                  <Button
-                    size="sm"
-                    onClick={() => applyMutation.mutate(candidateResult.evaluation.id)}
-                    disabled={applyMutation.isPending}
-                  >
-                    {applyMutation.isPending ? "Applying..." : "Apply This Evaluation"}
-                  </Button>
+        {/* Re-Evaluation (Super Admin Only) */}
+        {isSuperAdmin && (
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm">Re-Evaluation</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* Re-Evaluate Button */}
+              <div>
+                {canReEvaluate ? (
                   <Button
                     size="sm"
                     variant="outline"
-                    onClick={() => setCandidateResult(null)}
-                    disabled={applyMutation.isPending}
+                    onClick={() => reEvaluateMutation.mutate()}
+                    disabled={reEvaluateMutation.isPending}
                   >
-                    Discard
+                    <RefreshCw className={`w-3.5 h-3.5 mr-1.5 ${reEvaluateMutation.isPending ? "animate-spin" : ""}`} />
+                    {reEvaluateMutation.isPending ? "Re-evaluating..." : "Re-Evaluate Record"}
                   </Button>
-                </div>
+                ) : (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span>
+                        <Button size="sm" variant="outline" disabled>
+                          <RefreshCw className="w-3.5 h-3.5 mr-1.5" />
+                          Re-Evaluate Record
+                        </Button>
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p className="text-xs">No transcript available for re-evaluation.</p>
+                    </TooltipContent>
+                  </Tooltip>
+                )}
               </div>
-            )}
 
-            {/* Existing pending candidate (from evaluations list) */}
-            {!candidateResult && pendingCandidate && pendingCandidate.status === "candidate" && (
-              <div className="space-y-3">
-                <h4 className="text-xs font-medium text-foreground">Pending Candidate</h4>
-                <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs rounded border border-card-border p-3">
-                  <div><span className="text-muted-foreground">Name:</span> {pendingCandidate.candidateName || "-"}</div>
-                  <div><span className="text-muted-foreground">Address:</span> {pendingCandidate.candidateAddress || "-"}</div>
-                  <div><span className="text-muted-foreground">Intent:</span> {pendingCandidate.candidateIntent || "-"}</div>
-                  <div><span className="text-muted-foreground">Department:</span> {pendingCandidate.candidateDepartment || "-"}</div>
-                  <div className="col-span-2"><span className="text-muted-foreground">Summary:</span> {pendingCandidate.candidateSummary || "-"}</div>
+              {/* Candidate Diff */}
+              {candidateResult && (
+                <div className="space-y-3">
+                  <h4 className="text-xs font-medium text-foreground">Candidate Evaluation</h4>
+                  <EvaluationDiff diff={candidateResult.diff} />
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      onClick={() => applyMutation.mutate(candidateResult.evaluation.id)}
+                      disabled={applyMutation.isPending}
+                    >
+                      {applyMutation.isPending ? "Applying..." : "Apply This Evaluation"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setCandidateResult(null)}
+                      disabled={applyMutation.isPending}
+                    >
+                      Discard
+                    </Button>
+                  </div>
                 </div>
-                <div className="flex gap-2">
-                  <Button
-                    size="sm"
-                    onClick={() => applyMutation.mutate(pendingCandidate.id)}
-                    disabled={applyMutation.isPending}
-                  >
-                    {applyMutation.isPending ? "Applying..." : "Apply This Evaluation"}
-                  </Button>
-                </div>
-              </div>
-            )}
+              )}
 
-            {/* Evaluation History */}
-            {evaluations.length > 0 && (
-              <div>
-                <h4 className="text-xs font-medium text-foreground mb-2">Evaluation History</h4>
-                <EvaluationHistory evaluations={evaluations} />
-              </div>
-            )}
-          </CardContent>
-        </Card>
+              {/* Existing pending candidate (from evaluations list) */}
+              {!candidateResult && pendingCandidate && pendingCandidate.status === "candidate" && (
+                <div className="space-y-3">
+                  <h4 className="text-xs font-medium text-foreground">Pending Candidate</h4>
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs rounded border border-card-border p-3">
+                    <div><span className="text-muted-foreground">Name:</span> {pendingCandidate.candidateName || "-"}</div>
+                    <div><span className="text-muted-foreground">Address:</span> {pendingCandidate.candidateAddress || "-"}</div>
+                    <div><span className="text-muted-foreground">Intent:</span> {pendingCandidate.candidateIntent || "-"}</div>
+                    <div><span className="text-muted-foreground">Department:</span> {pendingCandidate.candidateDepartment || "-"}</div>
+                    <div className="col-span-2"><span className="text-muted-foreground">Summary:</span> {pendingCandidate.candidateSummary || "-"}</div>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      onClick={() => applyMutation.mutate(pendingCandidate.id)}
+                      disabled={applyMutation.isPending}
+                    >
+                      {applyMutation.isPending ? "Applying..." : "Apply This Evaluation"}
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {/* Evaluation History */}
+              {evaluations.length > 0 && (
+                <div>
+                  <h4 className="text-xs font-medium text-foreground mb-2">Evaluation History</h4>
+                  <EvaluationHistory evaluations={evaluations} />
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
       </div>
     </div>
   );

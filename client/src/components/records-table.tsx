@@ -35,10 +35,9 @@ interface RecordsTableProps {
   records: IntakeRecord[];
   showCost?: boolean;
   isLoading?: boolean;
-  isSuperAdmin?: boolean;
 }
 
-export function RecordsTable({ records, showCost = false, isLoading = false, isSuperAdmin = false }: RecordsTableProps) {
+export function RecordsTable({ records, showCost = false, isLoading = false }: RecordsTableProps) {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [recordToDelete, setRecordToDelete] = useState<IntakeRecord | null>(null);
   const queryClient = useQueryClient();
@@ -169,16 +168,12 @@ export function RecordsTable({ records, showCost = false, isLoading = false, isS
               <TableCell className={`${cellClass} font-medium text-foreground`}>
                 <div className="flex items-center gap-1 min-w-0">
                   <span className="truncate">
-                    {isSuperAdmin ? (
-                      <Link
-                        href={`/records/${record.id}`}
-                        className="hover:underline hover:text-primary cursor-pointer"
-                      >
-                        {record.name}
-                      </Link>
-                    ) : (
-                      record.name
-                    )}
+                    <Link
+                      href={`/records/${record.id}`}
+                      className="hover:underline hover:text-primary cursor-pointer"
+                    >
+                      {record.name}
+                    </Link>
                   </span>
                   {record.needsReview && (
                     <span title="Needs review">
