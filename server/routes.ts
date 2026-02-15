@@ -37,6 +37,7 @@ import {
   getSessionCount,
   getSessionDebugInfo,
   clearSession,
+  SMS_CONSENT_CONFIRMATION,
   type SmsSession,
   type SmsFlowResult,
 } from "./sms-session";
@@ -906,6 +907,7 @@ export async function registerRoutes(
       timestamp: new Date().toISOString(),
       transcriptSummary: issue.substring(0, 200) || "Processing...",
       clientId: "client_demo",
+      smsConsent: session.smsConsent ?? false,
     };
 
     const validation = insertIntakeRecordSchema.safeParse(pendingRecord);
@@ -1014,6 +1016,7 @@ export async function registerRoutes(
         timestamp: new Date().toISOString(),
         transcriptSummary: issue.substring(0, 200) || "Abandoned session",
         clientId: "client_demo",
+        smsConsent: session.smsConsent ?? false,
       };
 
       const validation = insertIntakeRecordSchema.safeParse(pendingRecord);
@@ -1177,6 +1180,12 @@ export async function registerRoutes(
             return returnTwiml(flowResult.message);
           }
 
+          case "ask_consent": {
+            console.log(`[TWILIO-GUIDED] ASK_CONSENT phone=*${fromNumber.slice(-4)}`);
+            processedMessageSids.add(messageSid);
+            return returnTwiml(flowResult.message);
+          }
+
           case "complete": {
             // HARD GUARD: Double-check all 3 fields before creating record
             if (!isSessionComplete(flowResult.session)) {
@@ -1194,8 +1203,12 @@ export async function registerRoutes(
               messageSid,
               flowResult.reason
             );
-            console.log(`[TWILIO-GUIDED] COMPLETE: recordId=${recordId}`);
-            return returnTwiml(responseMessage);
+            console.log(`[TWILIO-GUIDED] COMPLETE: recordId=${recordId} smsConsent=${flowResult.session.smsConsent}`);
+            // Prepend consent confirmation if user opted in
+            const consentPrefix = flowResult.session.smsConsent === true
+              ? SMS_CONSENT_CONFIRMATION + "\n\n"
+              : "";
+            return returnTwiml(consentPrefix + responseMessage);
           }
 
           case "timeout": {

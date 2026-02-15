@@ -40,6 +40,8 @@ export interface SmsSession {
   messageCount: number;
   askedFields: Set<SmsFieldName>;
   completed: boolean;
+  consentAsked: boolean;      // true after consent question sent
+  smsConsent: boolean | null; // true=opt-in, false=opt-out, null=not asked
 }
 
 // ============================================================
@@ -70,9 +72,17 @@ const THANK_YOU_TEMPLATE = (refId: string) =>
 
 export type SmsFlowResult =
   | { action: "ask_followup"; message: string; session: SmsSession }
-  | { action: "complete"; session: SmsSession; reason: "all_fields" | "max_messages" }
+  | { action: "ask_consent"; message: string; session: SmsSession }
+  | { action: "complete"; session: SmsSession; reason: "all_fields" | "max_messages" | "consent_replied" }
   | { action: "timeout"; session: SmsSession; hadData: boolean }
   | { action: "cancelled"; session: SmsSession };
+
+// SMS consent message — exact client-approved wording
+export const SMS_CONSENT_MESSAGE =
+  "Would you like occasional texts from us for emergencies (weather/evacuations) & city announcements (closures, events\u2014only when needed)? Msg & data rates may apply. Reply YES to confirm & join, or STOP anytime to unsubscribe. HELP for more info.";
+
+export const SMS_CONSENT_CONFIRMATION =
+  "You're now signed up for Town Hall alerts & updates! Msg & data rates may apply. Reply STOP to unsubscribe or HELP for info.";
 
 export interface SmsSessionDebugInfo {
   phoneLast4: string;
@@ -85,6 +95,8 @@ export interface SmsSessionDebugInfo {
   messageCount: number;
   ageMs: number;
   completed: boolean;
+  consentAsked: boolean;
+  smsConsent: boolean | null;
 }
 
 // ============================================================
@@ -126,6 +138,8 @@ export function getOrCreateSession(phoneNumber: string): SmsSession {
     messageCount: 0,
     askedFields: new Set(),
     completed: false,
+    consentAsked: false,
+    smsConsent: null,
   };
 
   // Memory safeguard: if we hit max sessions, remove oldest
@@ -277,11 +291,40 @@ export async function processSmsWithSession(
   session.messageCount++;
   session.messageHistory.push(messageBody);
 
+  // ── Consent reply handling ──
+  // If we already asked consent and are waiting for reply, handle it here
+  // before any extraction logic.
+  if (session.consentAsked && !session.completed) {
+    const reply = messageBody.trim().toUpperCase();
+    if (reply === "YES") {
+      session.smsConsent = true;
+      session.completed = true;
+      console.log(`[sms-session] CONSENT_YES phone=*${phoneNumber.slice(-4)}`);
+      return { action: "complete", session, reason: "consent_replied" };
+    }
+    // STOP is already caught by isCancelMessage above, but handle explicitly
+    if (reply === "STOP") {
+      session.completed = true;
+      console.log(`[sms-session] CONSENT_STOP phone=*${phoneNumber.slice(-4)}`);
+      return { action: "cancelled", session };
+    }
+    // NO or anything else → opt-out
+    session.smsConsent = false;
+    session.completed = true;
+    console.log(`[sms-session] CONSENT_NO phone=*${phoneNumber.slice(-4)} reply="${messageBody.trim().substring(0, 40)}"`);
+    return { action: "complete", session, reason: "consent_replied" };
+  }
+
   console.log(`[sms-session] PROCESS phone=*${phoneNumber.slice(-4)} msgNum=${session.messageCount}`);
 
   // Check max messages — but NEVER complete without all 3 fields
   if (session.messageCount > MAX_MESSAGES_PER_SESSION) {
     const hasAll = !!session.name && !!session.address && !!session.issue;
+    if (hasAll && !session.consentAsked) {
+      session.consentAsked = true;
+      console.log(`[sms-session] MAX_MESSAGES phone=*${phoneNumber.slice(-4)} — all fields present, asking consent`);
+      return { action: "ask_consent", message: SMS_CONSENT_MESSAGE, session };
+    }
     if (hasAll) {
       console.log(`[sms-session] MAX_MESSAGES phone=*${phoneNumber.slice(-4)} — all fields present, completing`);
       return { action: "complete", session, reason: "max_messages" };
@@ -402,8 +445,14 @@ function determineNextAction(
   const hasAddress = !!session.address;
   const hasIssue = !!session.issue;
 
-  // All fields present → COMPLETE
+  // All fields present → ask consent before completing
   if (hasName && hasAddress && hasIssue) {
+    if (!session.consentAsked) {
+      session.consentAsked = true;
+      console.log(`[sms-session] ALL_FIELDS_PRESENT → ASK_CONSENT phone=*${session.phoneNumber.slice(-4)}`);
+      return { action: "ask_consent", message: SMS_CONSENT_MESSAGE, session };
+    }
+    // Consent already asked and replied (shouldn't reach here normally)
     session.completed = true;
     return { action: "complete", session, reason: "all_fields" };
   }
@@ -640,6 +689,8 @@ export function getAllActiveSessions(): SmsSessionDebugInfo[] {
       messageCount: session.messageCount,
       ageMs: now - session.lastActivityAt.getTime(),
       completed: session.completed,
+      consentAsked: session.consentAsked,
+      smsConsent: session.smsConsent,
     });
   });
 
@@ -672,6 +723,8 @@ export function getSessionDebugInfo(phoneNumber: string): SmsSessionDebugInfo | 
     messageCount: session.messageCount,
     ageMs: now - session.lastActivityAt.getTime(),
     completed: session.completed,
+    consentAsked: session.consentAsked,
+    smsConsent: session.smsConsent,
   };
 }
 
