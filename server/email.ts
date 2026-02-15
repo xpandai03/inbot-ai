@@ -292,6 +292,7 @@ export function normalizeDepartment(department: string): string {
     "Parks & Recreation",
     "Sanitation",
     "Utilities",
+    "Planning and Zoning",
     "General",
   ];
 

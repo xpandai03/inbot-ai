@@ -67,6 +67,7 @@ export const KNOWN_DEPARTMENTS = [
   "Parks & Recreation",
   "Sanitation",
   "Utilities",
+  "Planning and Zoning",
 ] as const;
 
 export type KnownDepartment = (typeof KNOWN_DEPARTMENTS)[number];

@@ -45,6 +45,7 @@ export const INTENT_CATEGORIES = [
   "Trash / Sanitation",
   "Billing / Payment",
   "Safety Concern / Suspicious Activity",  // Phase 2: Added for crime/safety reports
+  "Construction / Permit Inquiry",         // Phase 2A: Planning and Zoning routing
   "General Inquiry",
 ] as const;
 
@@ -54,6 +55,7 @@ export const DEPARTMENT_CATEGORIES = [
   "Finance",
   "Parks & Recreation",
   "Sanitation",
+  "Planning and Zoning",
   "General",
 ] as const;
 
@@ -67,6 +69,7 @@ INTENT (choose exactly one):
 - Trash / Sanitation
 - Billing / Payment
 - Safety Concern / Suspicious Activity
+- Construction / Permit Inquiry
 - General Inquiry
 
 DEPARTMENT (choose exactly one):
@@ -75,6 +78,7 @@ DEPARTMENT (choose exactly one):
 - Finance
 - Parks & Recreation
 - Sanitation
+- Planning and Zoning
 - General
 
 Respond with JSON only, no markdown: {"intent": "...", "department": "...", "summary": "..."}
@@ -83,6 +87,8 @@ The summary should be 1 sentence describing the citizen's issue.
 Use "Safety Concern / Suspicious Activity" for crime reports, suspicious persons, break-ins, vandalism, trespassing, or safety hazards. Route these to "Public Safety".
 
 Use "Water / Utilities" for hydrants (fire hydrants), water leaks, pipe breaks, flooding from infrastructure, water running across roads, sewer issues, and any water/gas/electric outage. Route these to "Public Works".
+
+Use "Construction / Permit Inquiry" for building permits, zoning questions, construction permits, pool/shed/chimney/fence/deck/garage installation permits, zoning variances, and development inquiries. Route these to "Planning and Zoning". Do NOT use this for construction accidents or emergencies — those go to "Public Safety".
 
 If the input is unclear or doesn't fit any category, use "General Inquiry" for intent and "General" for department.`;
 
@@ -280,6 +286,25 @@ const INTENT_PATTERNS: Array<{ pattern: RegExp; intent: string; priority: number
   { pattern: /plan\s*(de\s*)?pago/i, intent: "Billing / Payment", priority: 85 },  // payment plan
   { pattern: /deuda|adeudo/i, intent: "Billing / Payment", priority: 80 },  // debt/amount owed
 
+  // CONSTRUCTION / PERMIT INQUIRY - Planning and Zoning (Phase 2A)
+  // English
+  { pattern: /building\s*permit/i, intent: "Construction / Permit Inquiry", priority: 95 },
+  { pattern: /construction\s*permit/i, intent: "Construction / Permit Inquiry", priority: 95 },
+  { pattern: /zoning\s*(variance|issue|question|inquiry|request|change)/i, intent: "Construction / Permit Inquiry", priority: 95 },
+  { pattern: /\bzoning\b/i, intent: "Construction / Permit Inquiry", priority: 90 },
+  { pattern: /(need|want|apply|get|request).{0,15}permit/i, intent: "Construction / Permit Inquiry", priority: 90 },
+  { pattern: /(pool|shed|chimney|fence|deck|garage)\s*(permit|install|build|construct)/i, intent: "Construction / Permit Inquiry", priority: 90 },
+  { pattern: /(permit|build|install).{0,15}(pool|shed|chimney|fence|deck|garage|addition)/i, intent: "Construction / Permit Inquiry", priority: 90 },
+  { pattern: /home\s*improvement\s*permit/i, intent: "Construction / Permit Inquiry", priority: 90 },
+  { pattern: /\baddition\b.{0,15}(house|home|build|permit)/i, intent: "Construction / Permit Inquiry", priority: 85 },
+  { pattern: /(build|construct).{0,15}(addition|extension)/i, intent: "Construction / Permit Inquiry", priority: 85 },
+  // Spanish
+  { pattern: /permiso\s*(de\s*)?(construcci[oó]n|obra)/i, intent: "Construction / Permit Inquiry", priority: 95 },
+  { pattern: /zonificaci[oó]n/i, intent: "Construction / Permit Inquiry", priority: 95 },
+  { pattern: /(necesito|quiero|solicitar).{0,15}permiso/i, intent: "Construction / Permit Inquiry", priority: 90 },
+  { pattern: /permiso.{0,15}(piscina|garaje|cobertizo|cerca)/i, intent: "Construction / Permit Inquiry", priority: 90 },
+  { pattern: /ampliaci[oó]n/i, intent: "Construction / Permit Inquiry", priority: 85 },
+
   // SAFETY CONCERN / SUSPICIOUS ACTIVITY - Crime, safety hazards, suspicious persons
   // Phase 2 Hardening: Added for public safety intake routing
   // English - Crime/Break-in
@@ -381,15 +406,31 @@ const DEPARTMENT_PATTERNS: Array<{ pattern: RegExp; department: string; priority
   { pattern: /(property|city|county)\s*tax/i, department: "Finance", priority: 95 },
   { pattern: /(water|utility|trash)\s*bill/i, department: "Finance", priority: 90 },
   { pattern: /payment\s*(plan|option|arrangement)/i, department: "Finance", priority: 90 },
-  { pattern: /permit\s*(fee|application|cost)/i, department: "Finance", priority: 85 },
+  { pattern: /permit\s*(fee|cost)/i, department: "Finance", priority: 85 },
   { pattern: /license\s*(fee|renewal|cost)/i, department: "Finance", priority: 85 },
   { pattern: /fine|citation|penalty/i, department: "Finance", priority: 80 },
   // Spanish
   { pattern: /impuesto|predial/i, department: "Finance", priority: 95 },  // tax/property tax
   { pattern: /factura|recibo\s*(de\s*)?(agua|luz|gas)/i, department: "Finance", priority: 90 },  // bill/utility receipt
   { pattern: /plan\s*(de\s*)?pago/i, department: "Finance", priority: 90 },  // payment plan
-  { pattern: /permiso|licencia/i, department: "Finance", priority: 85 },  // permit/license
+  { pattern: /licencia/i, department: "Finance", priority: 85 },  // license (fee context)
   { pattern: /multa|infracci[oó]n/i, department: "Finance", priority: 80 },  // fine/citation
+
+  // PLANNING AND ZONING - Permits, construction, development (Phase 2A)
+  // English
+  { pattern: /building\s*permit|construction\s*permit/i, department: "Planning and Zoning", priority: 95 },
+  { pattern: /\bzoning\b/i, department: "Planning and Zoning", priority: 95 },
+  { pattern: /(need|want|apply|get|request).{0,15}permit/i, department: "Planning and Zoning", priority: 90 },
+  { pattern: /permit\s*(application|request|inquiry)/i, department: "Planning and Zoning", priority: 90 },
+  { pattern: /(pool|shed|chimney|fence|deck|garage)\s*(permit|install|build)/i, department: "Planning and Zoning", priority: 90 },
+  { pattern: /home\s*improvement/i, department: "Planning and Zoning", priority: 85 },
+  { pattern: /\baddition\b.{0,15}(house|home|build)/i, department: "Planning and Zoning", priority: 85 },
+  // Spanish
+  { pattern: /permiso\s*(de\s*)?(construcci[oó]n|obra)/i, department: "Planning and Zoning", priority: 95 },
+  { pattern: /zonificaci[oó]n/i, department: "Planning and Zoning", priority: 95 },
+  { pattern: /(necesito|quiero|solicitar).{0,15}permiso/i, department: "Planning and Zoning", priority: 90 },
+  { pattern: /permiso.{0,15}(piscina|garaje|cobertizo)/i, department: "Planning and Zoning", priority: 90 },
+  { pattern: /ampliaci[oó]n/i, department: "Planning and Zoning", priority: 85 },
 
   // PARKS & RECREATION - Parks and facilities
   // English
@@ -591,12 +632,43 @@ const STRONG_INTENT_KEYWORDS: Array<{ keywords: RegExp[]; intent: string; depart
     intent: "Billing / Payment",
     department: "Finance",
   },
+  // Construction / Permit Inquiry (Phase 2A: Planning and Zoning)
+  // Context-guarded: "construction" alone does NOT trigger — needs permit/zoning context.
+  // Safety keywords (accident, injury, vandalism) are in the Safety group, so
+  // detectAllStrongIntents will see competing signals and defer to LLM.
+  {
+    keywords: [
+      // Direct permit/zoning keywords — always trigger
+      /\bpermit\b/i,                                       // "permit" (but not "permitted")
+      /\bzoning\b/i,                                       // "zoning"
+      /building\s*permit/i,                                // "building permit"
+      /construction\s*permit/i,                            // "construction permit"
+      /zoning\s*variance/i,                                // "zoning variance"
+      /\bdevelopment\b/i,                                  // "development"
+      // Context-guarded: construction + permit context
+      /construction.{0,20}(permit|approv|applic|licens)/i, // "construction permit/approval/application"
+      /(need|want|apply|get|request).{0,20}permit/i,       // "I need a permit", "apply for a permit"
+      // Structure-specific with permit/build/install context
+      /(pool|shed|chimney|fence|deck|garage|addition).{0,20}(permit|build|install|construct|add)/i,
+      /(permit|build|install|construct).{0,20}(pool|shed|chimney|fence|deck|garage|addition)/i,
+      /home\s*improvement\s*permit/i,                      // "home improvement permit"
+      // Spanish: permit/zoning
+      /permiso\s*(de\s*)?(construcci[oó]n|obra)/i,         // "permiso de construcción"
+      /\bpermiso\b/i,                                      // "permiso" (permit)
+      /zonificaci[oó]n/i,                                  // "zonificación"
+      /permiso.{0,20}(piscina|garaje|cobertizo|cerca)/i,   // "permiso para piscina/garaje"
+      /ampliaci[oó]n/i,                                    // "ampliación" (addition/expansion)
+      /(necesito|quiero|solicitar).{0,20}permiso/i,        // "necesito un permiso"
+    ],
+    intent: "Construction / Permit Inquiry",
+    department: "Planning and Zoning",
+  },
   // Safety Concern / Suspicious Activity (EXPANDED Spanish)
   {
     keywords: [
-      /suspicious/i, 
-      /break\s*in/i, 
-      /prowler/i, 
+      /suspicious/i,
+      /break\s*in/i,
+      /prowler/i,
       /burglar/i,
       /checking\s*(car|door|lock)/i,
       /trying\s*to\s*(open|break|get\s*into)/i,
