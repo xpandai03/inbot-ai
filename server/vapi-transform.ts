@@ -1812,10 +1812,19 @@ export function normalizeSpokenAddress(input: string): string {
         }
         // Digit directly before a street type keyword (e.g., "40 Street")
         // This is a numbered street — convert to ordinal ("40th Street")
+        // Guard: only for numbers ≤ 200. Larger numbers are house numbers
+        // in Spanish word order (e.g., "2704 Calle Principal" = house 2704).
         if (STREET_TYPE_LOWER_SET.has(nextLower)) {
           const num = parseInt(word, 10);
-          ordinalResult = num + getOrdinalSuffix(num);
-          console.log(`[normalize] Digit-before-street-type: "${word} ${words[i + 1]}" → "${ordinalResult} ${words[i + 1]}"`);
+          if (num <= 200) {
+            ordinalResult = num + getOrdinalSuffix(num);
+            console.log(`[normalize] Digit-before-street-type: "${word} ${words[i + 1]}" → "${ordinalResult} ${words[i + 1]}"`);
+            foundStreetWord = true;
+            continue;
+          }
+          // num > 200: treat as house number, not street number
+          console.log(`[normalize] House number before street type: "${word} ${words[i + 1]}" — kept as-is (>${200})`);
+          numberWords.push(word);
           foundStreetWord = true;
           continue;
         }
@@ -2142,8 +2151,10 @@ function extractAddressFromText(text: string): { address: string | null; pattern
         "what", "where", "which", "how", "when", "why", "who",
         "is", "are", "do", "does", "can", "could", "would", "should",
         "and", // Often prefixes questions: "And what is the street?"
+        "between", // "between Oak and Pine Street" → handled by Pattern 5b
         // Spanish
         "cual", "cuál", "que", "qué", "donde", "dónde", "como", "cómo",
+        "está", "esta", // "Está entre X y Y" → handled by Pattern 5b
       ]);
       const firstWord = candidate.split(/\s+/)[0].toLowerCase();
       if (QUESTION_STARTERS.has(firstWord)) {
@@ -2193,10 +2204,12 @@ function extractAddressFromText(text: string): { address: string | null; pattern
   // Inserted before generic contextual fallbacks.
   // ============================================================
 
-  // A. "Between X and Y" / "between X and Y Street"
+  // A. "Between X and Y" / "between X and Y Street" / "entre X y Y" (Spanish)
   const betweenPatterns = [
     // "between Oak and Main Street", "it's between Pine and 3rd Avenue"
     new RegExp(`between\\s+([A-Za-z][A-Za-z'-]*)\\s+and\\s+([A-Za-z0-9][A-Za-z0-9'-]*(?:\\s+(?:${STREET_TYPES}))?)`, "i"),
+    // Spanish: "entre Bergenline y 42nd Street", "entre Oak y Pine"
+    new RegExp(`entre\\s+([A-Za-z0-9][A-Za-z0-9'-]*(?:\\s+(?:${STREET_TYPES}))?)\\s+y\\s+([A-Za-z0-9][A-Za-z0-9'-]*(?:\\s+(?:${STREET_TYPES}))?)`, "i"),
   ];
   for (const pattern of betweenPatterns) {
     const match = text.match(pattern);
@@ -2204,7 +2217,7 @@ function extractAddressFromText(text: string): { address: string | null; pattern
       const a = match[1].trim();
       const b = match[2].trim();
       const location = `${a} & ${b} (Approximate)`;
-      console.log(`[extractAddressFromText] Pattern 5b (between) MATCHED: "${location}"`);
+      console.log(`[extractAddressFromText] Pattern 5b (between/entre) MATCHED: "${location}"`);
       return { address: location, pattern: "cross-street" };
     }
   }
@@ -2232,6 +2245,27 @@ function extractAddressFromText(text: string): { address: string | null; pattern
     const address = acrossMatch[1].replace(/[.,!?]$/, "").trim();
     console.log(`[extractAddressFromText] Pattern 5b (across-from) MATCHED: "${address}"`);
     return { address, pattern: "numeric" };
+  }
+
+  // D. Bare "X y Y" intersection (Spanish, no trigger word)
+  // Guards: at least one side must contain a street type, ordinal (42nd), or digit
+  // to prevent "Juan y Maria" from matching.
+  // Strip leading Spanish prepositions (en, en la, en el) before matching.
+  const textForBareY = text.replace(/^(?:est[aá]\s+)?(?:en\s+(?:la\s+|el\s+)?)?/i, "");
+  const bareYPattern = /([A-Za-z0-9][A-Za-z0-9'-]*(?:\s+[A-Za-z][A-Za-z'-]*)?)\s+y\s+([A-Za-z0-9][A-Za-z0-9'-]*(?:\s+[A-Za-z][A-Za-z'-]*)?)/i;
+  const bareYMatch = textForBareY.match(bareYPattern);
+  if (bareYMatch && bareYMatch[1] && bareYMatch[2]) {
+    const a = bareYMatch[1].trim();
+    const b = bareYMatch[2].trim();
+    const streetTypeRe = new RegExp(`(?:${STREET_TYPES})`, "i");
+    const ordinalOrDigit = /\d+(?:st|nd|rd|th)?/i;
+    const aLooksLikeStreet = streetTypeRe.test(a) || ordinalOrDigit.test(a);
+    const bLooksLikeStreet = streetTypeRe.test(b) || ordinalOrDigit.test(b);
+    if (aLooksLikeStreet || bLooksLikeStreet) {
+      const location = `${a} & ${b} (Approximate)`;
+      console.log(`[extractAddressFromText] Pattern 5d (bare X y Y) MATCHED: "${location}"`);
+      return { address: location, pattern: "cross-street" };
+    }
   }
 
   // ============================================================
