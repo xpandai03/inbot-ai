@@ -43,20 +43,23 @@ export interface VapiEndOfCallReport {
   call: VapiCall;
   artifact?: {
     messages: VapiMessage[];
+    structuredOutputs?: Record<string, {
+      name?: string;
+      result?: {
+        name?: string;
+        address?: string;
+        intent?: string;
+        department?: string;
+        sms_consent?: boolean | null;
+        summary?: string;
+        confidence_score?: number;
+        detected_language?: string;
+      };
+    }>;
   };
   analysis?: {
     summary: string;
     successEvaluation: string;
-    structuredData?: {
-      name?: string;
-      address?: string;
-      intent?: string;
-      department?: string;
-      sms_consent?: boolean | null;
-      summary?: string;
-      confidence_score?: number;
-      detected_language?: string;
-    };
   };
 }
 
@@ -2662,15 +2665,22 @@ function classifyTranscriptQuality(
 // ============================================================
 
 /**
- * Extract record fields from Vapi analysis.structuredData.
- * Returns null if structuredData is missing or lacks required fields (name + address).
+ * Extract record fields from Vapi artifact.structuredOutputs.
+ * Vapi stores structured outputs under dynamic IDs:
+ *   message.artifact.structuredOutputs[dynamicId].result
+ * Returns null if no structured output exists or lacks required fields.
  * Preserves verbatim name/address (no normalization) and maps confidence/language.
  */
 function extractFromStructuredData(
   msg: VapiEndOfCallReport,
   phone: string,
 ): (PartialIntakeRecord & { rawText: string; extractionMeta: ExtractionMeta }) | null {
-  const sd = msg.analysis?.structuredData;
+  const outputs = msg.artifact?.structuredOutputs;
+  if (!outputs) return null;
+
+  // Take the first structured output entry (keyed by dynamic UUID)
+  const firstEntry = Object.values(outputs)[0];
+  const sd = firstEntry?.result;
   if (!sd) return null;
 
   const name = (sd.name || "").trim();
@@ -2743,18 +2753,18 @@ export function transformVapiToIntakeRecord(payload: VapiWebhookPayload): Partia
   console.log("[vapi-transform] transcript preview:", rawTranscript.substring(0, 200));
 
   // ============================================================
-  // Phase 2A: Structured Data Guard — prefer analysis.structuredData
+  // Phase 2A: Structured Data Guard — prefer artifact.structuredOutputs
   // ============================================================
   const phone = extractPhoneNumber(payload);
   const structuredResult = extractFromStructuredData(msg, phone);
   if (structuredResult) {
-    console.log("[vapi-transform] SOURCE: structuredData");
+    console.log("[vapi-transform] SOURCE: structuredData (artifact path)");
     console.log(`[vapi-transform] structuredData — name="${structuredResult.name}", address="${structuredResult.address}", language="${structuredResult.language}"`);
-    console.log(`[vapi-transform] structuredData — confidence=${msg.analysis?.structuredData?.confidence_score ?? "N/A"}, callQuality=${structuredResult.extractionMeta.callQuality}`);
+    console.log(`[vapi-transform] structuredData — callQuality=${structuredResult.extractionMeta.callQuality}`);
     console.log("[vapi-transform] ====== EXTRACTION END (structuredData) ======");
     return structuredResult;
   }
-  console.log("[vapi-transform] SOURCE: regex-fallback (no valid structuredData)");
+  console.log("[vapi-transform] SOURCE: regex-fallback (no structuredOutputs)");
 
   // ============================================================
   // Quality classification — must run before any extraction
