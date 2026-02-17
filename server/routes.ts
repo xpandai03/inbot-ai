@@ -927,6 +927,9 @@ export async function registerRoutes(
       .join("\n");
     const newRecord = await storage.createRecord(validation.data, {
       rawTranscript: fullTranscript || issue,
+      callMetadata: {
+        artifactMessages: session.conversationHistory,
+      },
     });
     console.log(`[TWILIO-GUIDED] COMPLETE phone=*${fromNumber.slice(-4)} recordId=${newRecord.id}`);
 
@@ -1180,6 +1183,7 @@ export async function registerRoutes(
         switch (flowResult.action) {
           case "ask_followup": {
             console.log(`[TWILIO-GUIDED] ASK_FOLLOWUP: ${flowResult.message}`);
+            flowResult.session.conversationHistory.push({ role: "assistant", message: flowResult.message, time: Date.now() });
             // Mark this MessageSid as processed to prevent duplicate follow-ups on retry
             processedMessageSids.add(messageSid);
             return returnTwiml(flowResult.message);
@@ -1187,6 +1191,7 @@ export async function registerRoutes(
 
           case "ask_consent": {
             console.log(`[TWILIO-GUIDED] ASK_CONSENT phone=*${fromNumber.slice(-4)}`);
+            flowResult.session.conversationHistory.push({ role: "assistant", message: flowResult.message, time: Date.now() });
             processedMessageSids.add(messageSid);
             return returnTwiml(flowResult.message);
           }
@@ -1199,6 +1204,7 @@ export async function registerRoutes(
               const missing = !flowResult.session.issue ? "What issue would you like to report?"
                 : !flowResult.session.address ? "What's the street address where this is happening?"
                 : "Could you share your full name for our records?";
+              flowResult.session.conversationHistory.push({ role: "assistant", message: missing, time: Date.now() });
               processedMessageSids.add(messageSid);
               return returnTwiml(missing);
             }
@@ -1213,7 +1219,9 @@ export async function registerRoutes(
             const consentPrefix = flowResult.session.smsConsent === true
               ? SMS_CONSENT_CONFIRMATION + "\n\n"
               : "";
-            return returnTwiml(consentPrefix + responseMessage);
+            const finalMessage = consentPrefix + responseMessage;
+            flowResult.session.conversationHistory.push({ role: "assistant", message: finalMessage, time: Date.now() });
+            return returnTwiml(finalMessage);
           }
 
           case "timeout": {

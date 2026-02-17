@@ -29,6 +29,12 @@ export function isGuidedSmsEnabled(): boolean {
 
 export type SmsFieldName = "name" | "address" | "issue";
 
+export interface SmsConversationTurn {
+  role: "user" | "assistant";
+  message: string;
+  time: number;
+}
+
 export interface SmsSession {
   phoneNumber: string;        // E.164 format, session key
   createdAt: Date;
@@ -37,6 +43,7 @@ export interface SmsSession {
   address: string | null;
   issue: string | null;
   messageHistory: string[];   // raw messages for classification
+  conversationHistory: SmsConversationTurn[]; // full conversation for display
   messageCount: number;
   askedFields: Set<SmsFieldName>;
   completed: boolean;
@@ -135,6 +142,7 @@ export function getOrCreateSession(phoneNumber: string): SmsSession {
     address: null,
     issue: null,
     messageHistory: [],
+    conversationHistory: [],
     messageCount: 0,
     askedFields: new Set(),
     completed: false,
@@ -290,6 +298,7 @@ export async function processSmsWithSession(
   session.lastActivityAt = new Date();
   session.messageCount++;
   session.messageHistory.push(messageBody);
+  session.conversationHistory.push({ role: "user", message: messageBody, time: Date.now() });
 
   // ── Consent reply handling ──
   // If we already asked consent and are waiting for reply, handle it here

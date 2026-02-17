@@ -271,13 +271,15 @@ export default function RecordDetail() {
           </CardContent>
         </Card>
 
-        {/* Transcript */}
+        {/* Transcript / SMS Conversation */}
         <Collapsible open={transcriptOpen} onOpenChange={setTranscriptOpen}>
           <Card>
             <CollapsibleTrigger asChild>
               <CardHeader className="pb-2 cursor-pointer hover:bg-muted/30 transition-colors">
                 <div className="flex items-center justify-between">
-                  <CardTitle className="text-sm">Transcript</CardTitle>
+                  <CardTitle className="text-sm">
+                    {record.channel === "SMS" ? "SMS Conversation" : "Transcript"}
+                  </CardTitle>
                   <ChevronDown
                     className={`w-4 h-4 text-muted-foreground transition-transform ${
                       transcriptOpen ? "rotate-180" : ""
@@ -292,6 +294,10 @@ export default function RecordDetail() {
                   transcript={record.rawTranscript ?? null}
                   recordingUrl={record.recordingUrl}
                   stereoRecordingUrl={record.stereoRecordingUrl}
+                  artifactMessages={
+                    (record.callMetadata as any)?.artifactMessages ?? null
+                  }
+                  channel={record.channel}
                 />
               </CardContent>
             </CollapsibleContent>
