@@ -383,7 +383,12 @@ export async function registerRoutes(
       // Fall back to rawTranscript (msg.transcript or legacy buildRawIssueText)
       const cmeta = record.callMetadata || {};
       const extractionText = (cmeta['extractionText'] as string | undefined) || record.rawTranscript;
-      const artifactMessages = cmeta['artifactMessages'] as Array<{ role: string; message: string; time?: number }> | undefined;
+      const rawArtifactMessages = cmeta['artifactMessages'] as Array<{ role: string; message: string; time?: number }> | undefined;
+      const artifactMessages = rawArtifactMessages?.map(m => ({
+        role: (m.role === "user" || m.role === "bot" || m.role === "system" ? m.role : "system") as "user" | "bot" | "system",
+        message: m.message,
+        time: m.time ?? 0,
+      }));
       console.log(`[re-evaluate] Input source: ${cmeta['extractionText'] ? 'callMetadata.extractionText' : 'rawTranscript'}`);
       console.log(`[re-evaluate] Artifact messages: ${artifactMessages?.length ?? 0} (same passes as first-pass when present)`);
 

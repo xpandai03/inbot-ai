@@ -47,6 +47,16 @@ export interface VapiEndOfCallReport {
   analysis?: {
     summary: string;
     successEvaluation: string;
+    structuredData?: {
+      name?: string;
+      address?: string;
+      intent?: string;
+      department?: string;
+      sms_consent?: boolean | null;
+      summary?: string;
+      confidence_score?: number;
+      detected_language?: string;
+    };
   };
 }
 
@@ -2547,7 +2557,7 @@ export function extractPhoneNumber(payload: VapiWebhookPayload): string {
  */
 export function extractSmsConsent(messages: VapiMessage[], transcript: string): boolean | null {
   const CONSENT_KEYWORDS = /\b(text|sms|message|mensajes|texto|texts|optional\s*sms)\b/i;
-  const AFFIRMATIVE = /\b(yes|yeah|sure|ok|okay|sí|si|claro|por\s*favor|please|sounds\s*good)\b/i;
+  const AFFIRMATIVE = /\b(yes|yeah|sure|ok|okay|sí|si|claro|por\s*favor|please|sounds\s*good|est[aá]\s*bien|por\s*supuesto|dale|bueno)\b/i;
   const NEGATIVE = /\b(no|nope|no\s*thanks|no\s*thank\s*you|no\s*quiero|prefiero\s*no|don't|do\s*not)\b/i;
 
   // Prefer structured messages (last bot ask + next user reply)
@@ -2647,11 +2657,79 @@ function classifyTranscriptQuality(
   };
 }
 
+// ============================================================
+// Structured Data Extraction (Phase 2A — Spanish Hardening)
+// ============================================================
+
+/**
+ * Extract record fields from Vapi analysis.structuredData.
+ * Returns null if structuredData is missing or lacks required fields (name + address).
+ * Preserves verbatim name/address (no normalization) and maps confidence/language.
+ */
+function extractFromStructuredData(
+  msg: VapiEndOfCallReport,
+  phone: string,
+): (PartialIntakeRecord & { rawText: string; extractionMeta: ExtractionMeta }) | null {
+  const sd = msg.analysis?.structuredData;
+  if (!sd) return null;
+
+  const name = (sd.name || "").trim();
+  const address = (sd.address || "").trim();
+
+  // Require both name and address to be present and meaningful
+  if (!name || name === "Unknown Caller" || !address || address === "Not provided") {
+    console.log(`[vapi-transform] structuredData incomplete — name="${name}", address="${address}" → falling back to regex`);
+    return null;
+  }
+
+  // Build rawText for the classifier (it still needs transcript text)
+  const rawMessages = msg.artifact?.messages || [];
+  const concatenated = buildRawIssueText(rawMessages);
+  const hasArtifact = concatenated && concatenated !== "No issue description provided";
+  let rawText = hasArtifact ? concatenated : (msg.transcript || "");
+  if (!rawText && msg.analysis?.summary) {
+    rawText = msg.analysis.summary;
+  }
+
+  // Map language — trust structuredData, fallback to "English"
+  const VALID_LANGUAGES = new Set(["English", "Spanish", "Spanglish"]);
+  const language = sd.detected_language && VALID_LANGUAGES.has(sd.detected_language)
+    ? (sd.detected_language === "Spanglish" ? "Spanish" : sd.detected_language)
+    : "English";
+
+  // Map confidence to call quality for needsReview derivation
+  const confidence = typeof sd.confidence_score === "number" ? sd.confidence_score : 1.0;
+  const callQuality: CallQuality = confidence < 0.6 ? "degraded" : "good";
+
+  // SMS consent from structuredData (fallback to regex extraction below is NOT needed —
+  // if structuredData is present the LLM already extracted consent)
+  const smsConsent = typeof sd.sms_consent === "boolean" ? sd.sms_consent : null;
+
+  return {
+    name,
+    phone,
+    address,
+    channel: "Voice",
+    language,
+    durationSeconds: Math.round(msg.durationSeconds || 0),
+    cost: msg.cost || 0,
+    timestamp: msg.endedAt || new Date().toISOString(),
+    clientId: "client_demo",
+    smsConsent,
+    rawText: rawText || "No description provided",
+    extractionMeta: {
+      callQuality,
+      languageConfidence: confidence,
+    },
+  };
+}
+
 /**
  * Transform Vapi end-of-call-report into partial IntakeRecord
  * Returns record without intent/department/summary - those are added by the classifier
  *
- * Phase 1 Hardening: Uses multi-candidate scoring for name extraction
+ * Phase 2A: Prefers Vapi Structured Outputs when available (Spanish-reliable).
+ * Phase 1 Hardening: Falls back to multi-candidate scoring for name extraction
  * and cross-field validation to prevent address bleeding into name.
  */
 export function transformVapiToIntakeRecord(payload: VapiWebhookPayload): PartialIntakeRecord & { rawText: string; extractionMeta: ExtractionMeta } {
@@ -2663,6 +2741,20 @@ export function transformVapiToIntakeRecord(payload: VapiWebhookPayload): Partia
   console.log("[vapi-transform] artifact.messages count:", rawMessages.length);
   console.log("[vapi-transform] transcript length:", rawTranscript.length);
   console.log("[vapi-transform] transcript preview:", rawTranscript.substring(0, 200));
+
+  // ============================================================
+  // Phase 2A: Structured Data Guard — prefer analysis.structuredData
+  // ============================================================
+  const phone = extractPhoneNumber(payload);
+  const structuredResult = extractFromStructuredData(msg, phone);
+  if (structuredResult) {
+    console.log("[vapi-transform] SOURCE: structuredData");
+    console.log(`[vapi-transform] structuredData — name="${structuredResult.name}", address="${structuredResult.address}", language="${structuredResult.language}"`);
+    console.log(`[vapi-transform] structuredData — confidence=${msg.analysis?.structuredData?.confidence_score ?? "N/A"}, callQuality=${structuredResult.extractionMeta.callQuality}`);
+    console.log("[vapi-transform] ====== EXTRACTION END (structuredData) ======");
+    return structuredResult;
+  }
+  console.log("[vapi-transform] SOURCE: regex-fallback (no valid structuredData)");
 
   // ============================================================
   // Quality classification — must run before any extraction
@@ -2762,8 +2854,7 @@ export function transformVapiToIntakeRecord(payload: VapiWebhookPayload): Partia
   const nameResult = extractName(messages, extractionTranscript, addressResult.address);
   console.log("[vapi-transform] NAME extracted:", nameResult.name, "| source:", nameResult.source);
 
-  // Get phone number from FULL payload
-  const phone = extractPhoneNumber(payload);
+  // Phone already extracted above (before structuredData guard)
 
   // SMS consent: only for Voice; infer from messages/transcript (context-scoped)
   const smsConsent = extractSmsConsent(rawMessages, rawTranscript);
