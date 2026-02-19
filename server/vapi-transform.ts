@@ -2736,13 +2736,16 @@ function extractFromStructuredData(
   if (!sd) return null;
 
   const name = (sd.name || "").trim();
-  const address = (sd.address || "").trim();
+  const addressRaw = (sd.address || "").trim();
 
   // Require both name and address to be present and meaningful
-  if (!name || name === "Unknown Caller" || !address || address === "Not provided") {
-    console.log(`[vapi-transform] structuredData incomplete — name="${name}", address="${address}" → falling back to regex`);
+  if (!name || name === "Unknown Caller" || !addressRaw || addressRaw === "Not provided") {
+    console.log(`[vapi-transform] structuredData incomplete — name="${name}", address="${addressRaw}" → falling back to regex`);
     return null;
   }
+
+  // Normalize display form: Spanish→English, strip articles, expand abbreviations
+  const address = normalizeAddressDisplay(addressRaw);
 
   // Build rawText for the classifier (it still needs transcript text)
   const rawMessages = msg.artifact?.messages || [];
@@ -2771,7 +2774,7 @@ function extractFromStructuredData(
     name,
     phone,
     address,
-    addressRaw: address,
+    addressRaw,
     channel: "Voice",
     language,
     durationSeconds: Math.round(msg.durationSeconds || 0),
