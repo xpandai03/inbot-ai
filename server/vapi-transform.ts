@@ -2744,8 +2744,9 @@ function extractFromStructuredData(
     return null;
   }
 
-  // Normalize display form: Spanish→English, strip articles, expand abbreviations
-  const address = normalizeAddressDisplay(addressRaw);
+  // Normalize: spoken numbers→digits, then Spanish→English display cleanup
+  const afterSpoken = normalizeSpokenAddress(addressRaw);
+  const address = normalizeAddressDisplay(afterSpoken);
 
   // Build rawText for the classifier (it still needs transcript text)
   const rawMessages = msg.artifact?.messages || [];
@@ -2774,7 +2775,7 @@ function extractFromStructuredData(
     name,
     phone,
     address,
-    addressRaw,
+    addressRaw: afterSpoken,
     channel: "Voice",
     language,
     durationSeconds: Math.round(msg.durationSeconds || 0),
