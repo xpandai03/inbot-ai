@@ -505,6 +505,7 @@ export class SupabaseStorage implements IStorage {
     if (updates.name !== undefined) dbUpdates.name = updates.name;
     if (updates.phone !== undefined) dbUpdates.phone = updates.phone;
     if (updates.address !== undefined) dbUpdates.address = updates.address;
+    if (updates.addressRaw !== undefined) dbUpdates.address_raw = updates.addressRaw;
 
     const { data, error } = await this.supabase
       .from("interactions")

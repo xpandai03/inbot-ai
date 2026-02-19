@@ -201,6 +201,12 @@ export default function RecordDetail() {
                   )}
                 </div>
               </div>
+              {record.addressRaw && record.addressRaw !== record.address && (
+                <div>
+                  <span className="text-muted-foreground">Address (Spoken)</span>
+                  <p className="text-foreground text-sm opacity-70">{record.addressRaw}</p>
+                </div>
+              )}
               <div>
                 <span className="text-muted-foreground">Channel</span>
                 <p className="text-foreground flex items-center gap-1">

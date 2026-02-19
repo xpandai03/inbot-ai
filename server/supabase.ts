@@ -9,6 +9,7 @@ export interface DBInteraction {
   name: string;
   phone: string;
   address: string | null;
+  address_raw: string | null;
   raw_issue_text: string | null;
   issue_summary: string | null;
   department: string | null;
@@ -53,6 +54,7 @@ export function dbToIntakeRecord(row: DBInteraction): IntakeRecord {
     name: row.name,
     phone: row.phone,
     address: row.address ?? "",
+    addressRaw: row.address_raw ?? null,
     intent: row.raw_issue_text ?? "",
     department: row.department ?? "",
     channel: row.channel === "voice" ? "Voice" : "SMS",
@@ -115,6 +117,7 @@ export function intakeRecordToDB(
     name: record.name,
     phone: record.phone,
     address: record.address,
+    address_raw: record.addressRaw ?? null,
     raw_issue_text: record.intent,
     issue_summary: record.transcriptSummary,
     department: record.department,

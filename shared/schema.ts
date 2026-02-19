@@ -15,6 +15,7 @@ export const intakeRecordSchema = z.object({
   name: z.string(),
   phone: z.string(),
   address: z.string(),
+  addressRaw: z.string().nullable().optional(),
   intent: z.string(),
   department: z.string(),
   channel: z.enum(["Voice", "SMS"]),

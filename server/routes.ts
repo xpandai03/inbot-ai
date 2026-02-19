@@ -410,7 +410,7 @@ export async function registerRoutes(
         candidateIntent: result.candidateIntent,
         candidateDepartment: result.candidateDepartment,
         candidateSummary: result.candidateSummary,
-        extractionMeta: result.extractionMeta,
+        extractionMeta: { ...result.extractionMeta, candidateAddressRaw: result.candidateAddressRaw },
         status: "candidate",
       });
 
@@ -774,6 +774,7 @@ export async function registerRoutes(
               extractionMeta: {
                 classifierMethod: classification.method,
                 channel: "Voice",
+                candidateAddressRaw: recordFields.addressRaw,
               },
               status: "applied",
               appliedAt: new Date().toISOString(),

@@ -31,6 +31,7 @@ export interface ReEvaluationInput {
 export interface ReEvaluationOutput {
   candidateName: string;
   candidateAddress: string;
+  candidateAddressRaw: string;
   candidateIntent: string;
   candidateDepartment: string;
   candidateSummary: string;
@@ -72,6 +73,7 @@ async function reEvaluateSms(input: ReEvaluationInput): Promise<ReEvaluationOutp
   return {
     candidateName: extraction.name,
     candidateAddress: extraction.address,
+    candidateAddressRaw: extraction.address,
     candidateIntent: classification.intent,
     candidateDepartment: classification.department,
     candidateSummary: classification.summary,
@@ -106,7 +108,7 @@ async function reEvaluateVoice(input: ReEvaluationInput): Promise<ReEvaluationOu
   console.log(`[re-evaluate] Voice: tryHarder=ALWAYS (re-eval recovery path), current address="${currentAddr}", current name="${currentName}"`);
 
   // Step 2: Extract address (RULE 1+2: bot confirmation authoritative, last mention wins)
-  const { address, source: addressSource } = extractAddress(messages, cleanedTranscript, { tryHarder });
+  const { address, addressRaw, source: addressSource } = extractAddress(messages, cleanedTranscript, { tryHarder });
   console.log(`[re-evaluate] Voice: address="${address}" source="${addressSource}"`);
 
   // Step 3: Extract name (same message/transcript surface as address)
@@ -136,6 +138,7 @@ async function reEvaluateVoice(input: ReEvaluationInput): Promise<ReEvaluationOu
   return {
     candidateName: name,
     candidateAddress: address,
+    candidateAddressRaw: addressRaw,
     candidateIntent: classification.intent,
     candidateDepartment: classification.department,
     candidateSummary: classification.summary,

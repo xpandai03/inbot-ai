@@ -1929,6 +1929,56 @@ export function normalizeSpokenAddress(input: string): string {
 }
 
 /**
+ * Normalize address for display: Spanish→English street types, strip articles, expand abbreviations.
+ * Dictionary-based, no NLP. Called after normalizeSpokenAddress() and before validation.
+ */
+export function normalizeAddressDisplay(input: string): string {
+  let s = input;
+
+  // 1. Spanish street type → English (word-boundary, case-insensitive)
+  const SPANISH_STREET_MAP: [RegExp, string][] = [
+    [/\bcalle\b/gi, "Street"],
+    [/\b(?:avenida|av)\b/gi, "Avenue"],
+    [/\bbulevar\b/gi, "Boulevard"],
+    [/\bpaseo\b/gi, "Parkway"],
+    [/\b(?:callej[oó]n)\b/gi, "Alley"],
+  ];
+  for (const [re, eng] of SPANISH_STREET_MAP) {
+    s = s.replace(re, eng);
+  }
+
+  // 2. Intersection markers: standalone "y" → "&", strip leading "entre"
+  s = s.replace(/\bentre\s+/gi, "");
+  s = s.replace(/\s+y\s+/gi, " & ");
+
+  // 3. Strip Spanish articles between house number and street name: "30 de la Park" → "30 Park"
+  s = s.replace(/(\d)\s+(?:de\s+la|del|de\s+el|de)\s+/gi, "$1 ");
+  s = s.replace(/(\d)\s+(?:la|el)\s+/gi, "$1 ");
+
+  // 4. Abbreviation expansion (word-boundary, case-insensitive)
+  const ABBREV_MAP: [RegExp, string][] = [
+    [/\bSt\b(?!\.?\s*(#|\d))/g, "Street"],
+    [/\bAve\b/gi, "Avenue"],
+    [/\bBlvd\b/gi, "Boulevard"],
+    [/\bDr\b/gi, "Drive"],
+    [/\bLn\b/gi, "Lane"],
+    [/\bCt\b/gi, "Court"],
+  ];
+  for (const [re, full] of ABBREV_MAP) {
+    s = s.replace(re, full);
+  }
+
+  // 5. Collapse multiple spaces, trim
+  s = s.replace(/\s{2,}/g, " ").trim();
+
+  if (s !== input) {
+    console.log(`[normalizeAddressDisplay] "${input}" → "${s}"`);
+  }
+
+  return s;
+}
+
+/**
  * Get ordinal suffix for a number (1st, 2nd, 3rd, 4th, etc.)
  */
 function getOrdinalSuffix(n: number): string {
@@ -2351,7 +2401,7 @@ export function extractAddress(
   messages: VapiMessage[],
   transcript?: string,
   options?: ExtractAddressOptions
-): { address: string; source: string } {
+): { address: string; addressRaw: string; source: string } {
   const tryHarder = options?.tryHarder === true;
   console.log("[extractAddress] ====== ADDRESS EXTRACTION START ======", tryHarder ? "(tryHarder)" : "");
 
@@ -2370,32 +2420,34 @@ export function extractAddress(
   // Phase 2: Only if Phase 1 fails, accept contextual/approximate addresses
   // ============================================================
 
-  let contextualCandidate: { address: string; source: string } | null = null;
+  let contextualCandidate: { address: string; addressRaw: string; source: string } | null = null;
   const validate = tryHarder ? validateExtractedAddressRelaxed : validateExtractedAddress;
 
   // Helper: try extracting from a text block, return specific address or save contextual
-  const tryExtract = (text: string, sourceLabel: string): { address: string; source: string } | null => {
+  const tryExtract = (text: string, sourceLabel: string): { address: string; addressRaw: string; source: string } | null => {
     const result = extractAddressFromText(text);
     if (!result.address) return null;
 
     const isContextual = result.pattern.startsWith("contextual-") || result.pattern === "cross-street";
-    const normalized = normalizeSpokenAddress(result.address);
-    const validated = validate(normalized);
+    const afterSpoken = normalizeSpokenAddress(result.address);
+    const raw = afterSpoken; // raw = post-spoken-normalization, pre-display-normalization
+    const displayNormalized = normalizeAddressDisplay(afterSpoken);
+    const validated = validate(displayNormalized);
 
     if (!validated) {
-      console.log(`[extractAddress] → Validation REJECTED: "${normalized}" from ${sourceLabel}`);
+      console.log(`[extractAddress] → Validation REJECTED: "${displayNormalized}" from ${sourceLabel}`);
       return null;
     }
 
     if (isContextual) {
       if (!contextualCandidate) {
-        contextualCandidate = { address: validated, source: `${sourceLabel}/${result.pattern}` };
+        contextualCandidate = { address: validated, addressRaw: raw, source: `${sourceLabel}/${result.pattern}` };
         console.log(`[extractAddress] → Saved contextual fallback: "${validated}" from ${sourceLabel}`);
       }
       return null;
     }
 
-    return { address: validated, source: `${sourceLabel}/${result.pattern}` };
+    return { address: validated, addressRaw: raw, source: `${sourceLabel}/${result.pattern}` };
   };
 
   // ============================================================
@@ -2405,8 +2457,8 @@ export function extractAddress(
   // Track last user address and last bot address separately.
   // Priority: last bot confirmation > last user mention > transcript.
   // ============================================================
-  let lastUserAddress: { address: string; source: string } | null = null;
-  let lastBotAddress: { address: string; source: string } | null = null;
+  let lastUserAddress: { address: string; addressRaw: string; source: string } | null = null;
+  let lastBotAddress: { address: string; addressRaw: string; source: string } | null = null;
 
   // Pass A+B: Process ALL messages in call order (interleaved user + bot)
   for (let i = 0; i < allMsgFiltered.length; i++) {
@@ -2460,14 +2512,14 @@ export function extractAddress(
 
   // Phase 2: If no specific address found, use contextual fallback
   // Note: contextualCandidate is mutated inside tryExtract() closure, so TS needs the assertion
-  const fallback = contextualCandidate as { address: string; source: string } | null;
+  const fallback = contextualCandidate as { address: string; addressRaw: string; source: string } | null;
   if (fallback) {
     console.log(`[extractAddress] ====== USING CONTEXTUAL FALLBACK: "${fallback.address}" ======`);
     return fallback;
   }
 
   console.log("[extractAddress] ====== NO ADDRESS FOUND - returning 'Not provided' ======");
-  return { address: "Not provided", source: "default" };
+  return { address: "Not provided", addressRaw: "Not provided", source: "default" };
 }
 
 /**
@@ -2719,6 +2771,7 @@ function extractFromStructuredData(
     name,
     phone,
     address,
+    addressRaw: address,
     channel: "Voice",
     language,
     durationSeconds: Math.round(msg.durationSeconds || 0),
@@ -2801,6 +2854,7 @@ export function transformVapiToIntakeRecord(payload: VapiWebhookPayload): Partia
       name: "Unknown Caller",
       phone,
       address: "Not provided",
+      addressRaw: "Not provided",
       channel: "Voice",
       language,
       durationSeconds: Math.round(msg.durationSeconds || 0),
@@ -2878,6 +2932,7 @@ export function transformVapiToIntakeRecord(payload: VapiWebhookPayload): Partia
     name: nameResult.name,
     phone,
     address: addressResult.address,
+    addressRaw: addressResult.addressRaw,
     channel: "Voice",
     language,
     durationSeconds: Math.round(msg.durationSeconds || 0),
