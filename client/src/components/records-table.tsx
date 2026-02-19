@@ -145,7 +145,8 @@ export function RecordsTable({ records, showCost = false, isLoading = false }: R
           <TableRow className="hover:bg-transparent border-b border-card-border">
             <TableHead className={`${headerBase} w-[100px]`}>Name</TableHead>
             <TableHead className={`${headerBase} w-[95px]`}>Phone</TableHead>
-            <TableHead className={`${headerBase} w-[130px]`}>Address</TableHead>
+            <TableHead className={`${headerBase} w-[130px]`}>Address (Normalized)</TableHead>
+            <TableHead className={`${headerBase} w-[130px]`}>Address (Spoken)</TableHead>
             <TableHead className={`${headerBase} w-[120px]`}>Intent</TableHead>
             <TableHead className={`${headerBase} w-[85px]`}>Dept</TableHead>
             <TableHead className={`${headerBase} w-[32px] text-center`} title="Channel">Ch</TableHead>
@@ -203,6 +204,9 @@ export function RecordsTable({ records, showCost = false, isLoading = false }: R
                     </Badge>
                   )}
                 </div>
+              </TableCell>
+              <TableCell className={`${cellClass} text-xs text-muted-foreground/70`} title={record.addressRaw || undefined}>
+                <span className="truncate">{record.addressRaw || "-"}</span>
               </TableCell>
               <TableCell className={`${cellClass} truncate`}>
                 {record.intent === "Pending" ? (
