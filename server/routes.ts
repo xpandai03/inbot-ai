@@ -25,6 +25,7 @@ import {
   formatPhoneNumber,
   isTwilioConfigured,
 } from "./twilio";
+import { verifyRecordingToken } from "./recording-token";
 import {
   isGuidedSmsEnabled,
   processSmsWithSession,
@@ -1313,6 +1314,67 @@ export async function registerRoutes(
     const phone = req.params.phone;
     const deleted = clearSession(phone);
     res.json({ deleted, phone: phone.slice(-4) });
+  });
+
+  // ============================================================
+  // Recording Proxy — streams audio through inbot.ai domain
+  // so emails never expose raw Vapi storage URLs.
+  // ============================================================
+  app.get("/api/recordings/:recordId", async (req, res) => {
+    const { recordId } = req.params;
+    const token = req.query.tok as string | undefined;
+
+    if (!token || !verifyRecordingToken(recordId, token)) {
+      console.warn(`[recording-proxy] 403 invalid token for record=${recordId} ip=${req.ip}`);
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    try {
+      const detail = await storage.getRecordDetail(recordId);
+      const audioUrl = detail?.recordingUrl || detail?.stereoRecordingUrl;
+
+      if (!detail || !audioUrl) {
+        return res.status(404).json({ error: "Recording not found" });
+      }
+
+      console.log(`[recording-proxy] Streaming record=${recordId} ip=${req.ip} ua=${req.headers["user-agent"]?.substring(0, 80)}`);
+
+      const upstream = await fetch(audioUrl);
+
+      if (!upstream.ok) {
+        console.error(`[recording-proxy] Vapi fetch failed: ${upstream.status} for record=${recordId}`);
+        return res.status(502).json({ error: "Recording unavailable" });
+      }
+
+      // Forward content headers
+      const contentType = upstream.headers.get("content-type") || "audio/mpeg";
+      const contentLength = upstream.headers.get("content-length");
+
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Content-Disposition", "inline");
+      if (contentLength) {
+        res.setHeader("Content-Length", contentLength);
+      }
+
+      // Stream the body
+      const reader = upstream.body?.getReader();
+      if (!reader) {
+        return res.status(502).json({ error: "No response body from upstream" });
+      }
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        res.write(value);
+      }
+
+      res.end();
+    } catch (err) {
+      console.error(`[recording-proxy] Error for record=${recordId}:`, err);
+      if (!res.headersSent) {
+        res.status(500).json({ error: "Internal server error" });
+      }
+    }
   });
 
   return httpServer;

@@ -8,6 +8,7 @@
 import { Resend } from "resend";
 import type { IntakeRecord } from "@shared/schema";
 import type { VapiCallMetadata } from "./vapi-transform";
+import { generateRecordingToken } from "./recording-token";
 
 // Resend client - instantiated lazily when sending email
 let resendClient: Resend | null = null;
@@ -62,21 +63,31 @@ function formatEmailContent(
   console.log(`[email] Timestamp raw: ${record.timestamp}, formatted ET: ${timestamp}`);
 
   // Build recording section (Voice only, if URL present)
-  const recordingUrl = callMetadata?.recordingUrl || callMetadata?.stereoRecordingUrl;
-  const recordingHtml = (record.channel === "Voice" && recordingUrl) ? `
+  // Links route through inbot.ai proxy — never expose raw Vapi URLs in emails
+  const hasRecording = record.channel === "Voice" &&
+    (callMetadata?.recordingUrl || callMetadata?.stereoRecordingUrl);
+
+  let recordingHtml = "";
+  let recordingText = "";
+
+  if (hasRecording) {
+    const baseUrl = process.env.APP_URL || `https://${process.env.RAILWAY_PUBLIC_DOMAIN || "inbot-ai-production.up.railway.app"}`;
+    const token = generateRecordingToken(record.id);
+    const recordingLink = `${baseUrl}/api/recordings/${record.id}?tok=${token}`;
+
+    recordingHtml = `
       <div style="background: #f0fdf4; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #22c55e;">
         <h3 style="margin: 0 0 10px 0; color: #1a1a1a;">Call Recording</h3>
         <p style="margin: 0;">
-          <a href="${recordingUrl}" style="color: #16a34a; text-decoration: underline; font-weight: 500;">
+          <a href="${recordingLink}" style="color: #16a34a; text-decoration: underline; font-weight: 500;">
             Listen to Call Recording
           </a>
         </p>
       </div>
-  ` : "";
+    `;
 
-  const recordingText = (record.channel === "Voice" && recordingUrl)
-    ? `\nCall Recording:\n${recordingUrl}\n`
-    : "";
+    recordingText = `\nCall Recording:\n${recordingLink}\n`;
+  }
 
   // Build transcript section (Voice only, if transcript present)
   const transcript = callMetadata?.transcript;

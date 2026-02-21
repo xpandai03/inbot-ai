@@ -9,6 +9,12 @@ console.log(`[server] NODE_ENV: ${process.env.NODE_ENV}`);
 console.log(`[server] PORT: ${process.env.PORT || "3000 (default)"}`);
 console.log(`[build] commit: ${process.env.RAILWAY_GIT_COMMIT_SHA || "unknown"}`);
 
+// Validate required env vars early
+if (!process.env.RECORDING_SECRET) {
+  console.error("[server] FATAL: RECORDING_SECRET is not set. Generate one with: openssl rand -hex 32");
+  process.exit(1);
+}
+
 const app = express();
 const httpServer = createServer(app);
 
